@@ -160,7 +160,7 @@ install_python_env() {
 
     if [ ! -x "$VENV_DIR/bin/python" ] || ! "$VENV_DIR/bin/python" -c "import sys; sys.exit(sys.version_info[:2] != tuple(map(int, '$PY_VERSION'.split('.'))))"; then
         log "Creating Python $PY_VERSION environment in $VENV_DIR"
-        uv venv --clear --python "$PY_VERSION" "$VENV_DIR"
+        uv venv --clear --python-preference only-managed --python "$PY_VERSION" "$VENV_DIR"
     fi
 
     log "Installing PyTorch (${TORCH_SPEC[0]}, $STACK)"
