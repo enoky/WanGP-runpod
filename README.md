@@ -14,31 +14,63 @@
 
 Optional pod environment variable: `WANGP_AUTH_PASSWORD` (the password for the web UI).
 
-## Run
+## Install
 
-In the pod's web terminal or over SSH:
+In the pod's web terminal, the Jupyter Lab terminal or over SSH:
 
 ```bash
 cd /workspace
 git clone https://github.com/enoky/WanGP-runpod.git
-bash WanGP-runpod/setup.sh
+bash WanGP-runpod/setup.sh install
 ```
 
-The first run takes 10-20 minutes. When `Running on local URL` appears, open the pod's
-**Connect → HTTP Service [7860]** link (`https://<pod-id>-7860.proxy.runpod.net`).
+The installation takes 10-20 minutes and only has to be done once per volume.
 
-The UI is password protected by default. Without `WANGP_AUTH_PASSWORD`, WanGP prints a
-generated password (`WanGP web password: ...`) in the terminal at each start.
-
-To keep WanGP running after the terminal closes:
+## Start
 
 ```bash
-nohup bash /workspace/WanGP-runpod/setup.sh > /workspace/wangp.log 2>&1 &
-tail -f /workspace/wangp.log
+WANGP_AUTH_PASSWORD=choose-a-password \
+nohup bash /workspace/WanGP-runpod/setup.sh start > /workspace/wangp.log 2>&1 &
 ```
 
-After a pod restart, run the same command again: the Python environment is restored from its
-archive on `/workspace` instead of being downloaded again, which takes a few minutes.
+WanGP runs in the background and keeps running when the terminal is closed. Once the log
+shows `Running on local URL`, open the pod's **Connect → HTTP Service [7860]** link
+(`https://<pod-id>-7860.proxy.runpod.net`) and log in with the password.
+
+The UI is password protected by default. Without `WANGP_AUTH_PASSWORD`, WanGP generates a new
+password at each start and writes it to the log (`WanGP web password: ...`).
+
+After a pod restart, run the same start command again: everything on `/workspace` is reused.
+
+## Logs
+
+All output goes to `/workspace/wangp.log`.
+
+```bash
+tail -n 40 /workspace/wangp.log    # the latest 40 lines
+tail -f /workspace/wangp.log       # follow live
+```
+
+`tail -f` runs until Ctrl+C. On a tablet, close the terminal tab instead: WanGP is not affected.
+The file can also be opened from Jupyter Lab's file browser.
+
+## Stop and restart
+
+```bash
+pkill -f setup.sh; pkill -f wgp.py
+```
+
+Then run the start command again.
+
+## Update
+
+```bash
+cd /workspace/WanGP-runpod && git pull             # this script
+bash /workspace/WanGP-runpod/setup.sh update       # WanGP itself and its dependencies
+```
+
+If `git pull` refuses because `setup.sh` was edited locally, `git reset --hard origin/main`
+discards those edits.
 
 ## Commands
 
