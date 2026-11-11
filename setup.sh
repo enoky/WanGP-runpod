@@ -69,7 +69,7 @@ install_uv() {
     log "Installing uv into $UV_HOME/bin"
     mkdir -p "$UV_HOME/bin"
     curl -fsSL "https://github.com/astral-sh/uv/releases/latest/download/uv-$(uname -m)-unknown-linux-gnu.tar.gz" \
-        | tar -xz --strip-components=1 -C "$UV_HOME/bin" \
+        | tar -xz --no-same-owner --strip-components=1 -C "$UV_HOME/bin" \
         || die "Could not download uv"
     [ -x "$UV_HOME/bin/uv" ] || die "uv installation failed"
 }
