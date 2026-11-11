@@ -9,8 +9,8 @@
 | Template | Any Ubuntu-based NVIDIA image, e.g. *RunPod PyTorch 2.x* (the script brings its own Python and PyTorch) |
 | GPU | Any RTX 30xx or newer / A-series / L-series card |
 | Exposed HTTP port | `7860` |
-| Volume (`/workspace`) | 100 GB or more: the environment takes ~15 GB, each model 10-30 GB |
-| Container disk | 20 GB is enough |
+| Volume (`/workspace`) | 100 GB or more: the saved environment takes ~15 GB, each model 10-30 GB |
+| Container disk | 40 GB: the Python environment (~15 GB) runs from it |
 
 Optional pod environment variable: `WANGP_AUTH_PASSWORD` (the password for the web UI).
 
@@ -37,8 +37,8 @@ nohup bash /workspace/WanGP-runpod/setup.sh > /workspace/wangp.log 2>&1 &
 tail -f /workspace/wangp.log
 ```
 
-After a pod restart, run the same command again: the installation on `/workspace` is reused
-and only the system packages are restored, which takes about a minute.
+After a pod restart, run the same command again: the Python environment is restored from its
+archive on `/workspace` instead of being downloaded again, which takes a few minutes.
 
 ## Commands
 
@@ -68,7 +68,8 @@ Set these as environment variables (in the pod template or in front of the comma
 
 | Path | Content |
 | --- | --- |
-| `/workspace/WanGP` | WanGP checkout, config (`wgp_config.json`) and Python environment (`venv/`) |
+| `/workspace/WanGP` | WanGP checkout and config (`wgp_config.json`) |
+| `/workspace/.wangp-env.tar` | Saved Python environment, unpacked to `/opt/wangp` on the container disk |
 | `/workspace/WanGP/ckpts` | Downloaded models |
 | `/workspace/WanGP/loras` | LoRAs |
 | `/workspace/WanGP/outputs` | Generated videos and images |
