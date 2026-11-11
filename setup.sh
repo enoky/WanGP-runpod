@@ -7,7 +7,8 @@
 #   bash setup.sh update     pull the latest WanGP and refresh its dependencies
 #
 # Everything that must survive a pod restart lives under /workspace (the network
-# volume): the WanGP checkout, the Python environment, models, LoRAs and outputs.
+# volume): the WanGP checkout, models, LoRAs, outputs and an archive of the
+# Python environment (which itself runs from the faster container disk).
 # Settings are environment variables, see the "Settings" block below.
 
 set -euo pipefail
@@ -23,14 +24,30 @@ WANGP_ARGS="${WANGP_ARGS:-}"               # extra wgp.py arguments, e.g. "--pro
 WANGP_STACK="${WANGP_STACK:-auto}"         # auto | cu130 | cu128
 WANGP_EXTRA_KERNELS="${WANGP_EXTRA_KERNELS:-1}"  # 1 = also install Nunchaku / GGUF kernels
 # WANGP_AUTH_PASSWORD   the UI password; if unset WanGP generates one and prints it at startup
+# WANGP_PUBLIC_URL      the URL the UI is opened at; defaults to the RunPod proxy URL of this pod.
+#                       Set it to "none" when connecting some other way (e.g. a direct TCP port).
 
-VENV_DIR="${VENV_DIR:-$WANGP_DIR/venv}"
+# The Python environment is ~100k small files, which network volumes handle
+# very slowly. It lives on the fast container disk and is saved to / restored
+# from a single archive on the volume.
+LOCAL_DIR="${WANGP_LOCAL_DIR:-/opt/wangp}"
+VENV_DIR="$LOCAL_DIR/venv"
+ENV_ARCHIVE="${WANGP_ENV_ARCHIVE:-$WORKSPACE/.wangp-env.tar}"
+PYTHON_DIR="$LOCAL_DIR/python"
+ENV_ON_VOLUME=0
+# Installations made by the first version of this script keep their
+# environment on the volume; they are used as they are.
+if [ -z "${WANGP_LOCAL_DIR:-}" ] && [ -f "$WANGP_DIR/venv/.runpod_setup_stamp" ]; then
+    ENV_ON_VOLUME=1
+    VENV_DIR="$WANGP_DIR/venv"
+    PYTHON_DIR="$WORKSPACE/.uv/python"
+fi
 UV_HOME="${UV_HOME:-$WORKSPACE/.uv}"
 STAMP_FILE="$VENV_DIR/.runpod_setup_stamp"
 SCRIPT_VERSION=1
 
 export HF_HOME="${HF_HOME:-$WORKSPACE/.cache/huggingface}"
-export UV_PYTHON_INSTALL_DIR="$UV_HOME/python"
+export UV_PYTHON_INSTALL_DIR="$PYTHON_DIR"
 export UV_LINK_MODE=copy
 export UV_NO_CACHE=1                       # keep the (small) container disk free
 export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-300}"
@@ -152,10 +169,44 @@ pip_install_optional() {
     pip_install "$@" || warn "$label could not be installed; WanGP will run without it."
 }
 
+# Bring the environment back from the volume after a pod restart.
+restore_python_env() {
+    [ "$ENV_ON_VOLUME" = 1 ] && return 0
+    [ -x "$VENV_DIR/bin/python" ] && return 0
+    [ -f "$ENV_ARCHIVE" ] || return 0
+    log "Restoring the Python environment from $ENV_ARCHIVE (a few minutes)"
+    rm -rf "$LOCAL_DIR"
+    mkdir -p "$LOCAL_DIR"
+    if ! tar -xf "$ENV_ARCHIVE" --no-same-owner -C "$LOCAL_DIR"; then
+        warn "The saved environment is unusable; it will be reinstalled."
+        rm -rf "$LOCAL_DIR" "$ENV_ARCHIVE"
+    fi
+}
+
+save_python_env() {
+    [ "$ENV_ON_VOLUME" = 1 ] && return 0
+    log "Saving the Python environment to $ENV_ARCHIVE (a few minutes)"
+    if tar -cf "$ENV_ARCHIVE.tmp" -C "$LOCAL_DIR" . && mv -f "$ENV_ARCHIVE.tmp" "$ENV_ARCHIVE"; then
+        return 0
+    fi
+    rm -f "$ENV_ARCHIVE.tmp"
+    warn "Could not save the environment; it will be reinstalled after the next pod restart."
+}
+
 install_python_env() {
+    restore_python_env
     if [ -f "$STAMP_FILE" ] && [ "$(cat "$STAMP_FILE")" = "$(stamp_value)" ]; then
         log "Python environment is up to date."
         return 0
+    fi
+
+    local free_gb=99
+    if [ "$ENV_ON_VOLUME" = 0 ]; then
+        mkdir -p "$LOCAL_DIR"
+        free_gb="$(df -BG --output=avail "$LOCAL_DIR" | tail -n1 | tr -dc '0-9')"
+    fi
+    if [ "${free_gb:-0}" -lt 20 ]; then
+        die "Only ${free_gb}G free on the container disk ($LOCAL_DIR); the environment needs about 20G. Raise the pod's container disk to 40 GB."
     fi
 
     if [ ! -x "$VENV_DIR/bin/python" ] || ! "$VENV_DIR/bin/python" -c "import sys; sys.exit(sys.version_info[:2] != tuple(map(int, '$PY_VERSION'.split('.'))))"; then
@@ -185,6 +236,7 @@ install_python_env() {
     fi
 
     stamp_value > "$STAMP_FILE"
+    save_python_env
 }
 
 verify_install() {
@@ -233,6 +285,7 @@ do_update() {
 # ------------------------------- Launch -------------------------------------
 do_start() {
     install_system_packages
+    restore_python_env
     [ -x "$VENV_DIR/bin/python" ] && [ -f "$STAMP_FILE" ] || die "WanGP is not installed yet, run: bash setup.sh install"
 
     local args=(--listen --server-port "$WANGP_PORT")
@@ -250,8 +303,15 @@ do_start() {
     # shellcheck disable=SC1091
     source "$VENV_DIR/bin/activate"
 
-    if [ -n "${RUNPOD_POD_ID:-}" ]; then
-        log "WanGP will be reachable at https://${RUNPOD_POD_ID}-${WANGP_PORT}.proxy.runpod.net (port $WANGP_PORT must be an exposed HTTP port)"
+    # WanGP rejects logins ("Cross-origin request rejected") unless it knows the
+    # public address it is served at, because the RunPod proxy rewrites the Host header.
+    local public_url="${WANGP_PUBLIC_URL:-}"
+    if [ -z "$public_url" ] && [ -n "${RUNPOD_POD_ID:-}" ]; then
+        public_url="https://${RUNPOD_POD_ID}-${WANGP_PORT}.proxy.runpod.net"
+    fi
+    if [ -n "$public_url" ] && [ "$public_url" != none ]; then
+        args+=(--public-url "$public_url")
+        log "WanGP will be reachable at $public_url (port $WANGP_PORT must be an exposed HTTP port)"
     fi
     if [ "$WANGP_AUTH" = 1 ] && [ -z "${WANGP_AUTH_PASSWORD:-}" ]; then
         log "No WANGP_AUTH_PASSWORD set: look for the generated 'WanGP web password' line below."
