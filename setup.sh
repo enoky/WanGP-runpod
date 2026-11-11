@@ -55,6 +55,15 @@ export DEBIAN_FRONTEND=noninteractive
 export PYTHONUNBUFFERED=1
 export PATH="$UV_HOME/bin:$PATH"
 
+# RunPod images put their own CUDA toolkit on LD_LIBRARY_PATH. Its cuBLAS would be
+# mixed with the (different) one bundled with PyTorch and every matrix product then
+# fails with CUBLAS_STATUS_* errors, so those entries are dropped. The driver
+# libraries (/usr/local/nvidia) stay.
+if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+    LD_LIBRARY_PATH="$(printf '%s' "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v -i 'cuda' | paste -sd: - || true)"
+    export LD_LIBRARY_PATH
+fi
+
 log()  { printf '\n\033[1;36m[wangp-setup]\033[0m %s\n' "$*"; }
 warn() { printf '\n\033[1;33m[wangp-setup] WARNING:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\n\033[1;31m[wangp-setup] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -247,7 +256,9 @@ print(f"torch {torch.__version__} | CUDA build {torch.version.cuda} | CUDA avail
 if torch.cuda.is_available():
     p = torch.cuda.get_device_properties(0)
     print(f"GPU 0: {p.name}, {p.total_memory // 2**20} MiB, compute capability {p.major}.{p.minor}")
-    torch.zeros(1, device="cuda")
+    a = torch.randn(64, 64, device="cuda")
+    (a @ a).sum().item()
+    print("GPU matrix product: OK")
 else:
     print("PyTorch cannot see a GPU: the NVIDIA driver on this pod is probably too old for this CUDA build.")
     print("Try another pod, or reinstall with WANGP_STACK=cu128.")
