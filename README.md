@@ -115,6 +115,7 @@ Set these as environment variables (in the pod template or in front of the comma
 | `WANGP_AUTH` | `1` | `0` disables the password. The RunPod proxy URL is reachable by anyone who has it |
 | `WANGP_PORT` | `7860` | Port of the web UI |
 | `WANGP_PUBLIC_URL` | the pod's RunPod proxy URL | The address the UI is opened at; logins from any other address are rejected. `none` lifts the restriction |
+| `WANGP_MAX_RAM` | pod limit minus 10% | RAM budget for WanGP in GB. Without it WanGP plans with the host's full RAM and is killed when it exceeds the pod's limit. `0` disables |
 | `WANGP_ARGS` | empty | Extra `wgp.py` flags, e.g. `"--profile 3 --compile"` |
 | `WANGP_REF` | default branch | WanGP branch, tag or commit to install |
 | `WANGP_STACK` | `auto` | `cu130` (PyTorch 2.10, needs NVIDIA driver 580+) or `cu128` (PyTorch 2.7.1). `auto` picks from the pod's driver |

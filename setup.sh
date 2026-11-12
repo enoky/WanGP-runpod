@@ -24,6 +24,8 @@ WANGP_AUTH="${WANGP_AUTH:-1}"              # 1 = password-protect the UI, 0 = op
 WANGP_ARGS="${WANGP_ARGS:-}"               # extra wgp.py arguments, e.g. "--profile 3 --compile"
 WANGP_STACK="${WANGP_STACK:-auto}"         # auto | cu130 | cu128
 WANGP_EXTRA_KERNELS="${WANGP_EXTRA_KERNELS:-1}"  # 1 = also install Nunchaku / GGUF kernels
+# WANGP_MAX_RAM         RAM budget for WanGP in GB; defaults to the pod's memory limit minus a
+#                       margin. 0 lets WanGP plan with all the RAM of the host machine.
 # WANGP_AUTH_PASSWORD   the UI password; if unset WanGP generates one and prints it at startup
 # WANGP_PUBLIC_URL      the URL the UI is opened at; defaults to the RunPod proxy URL of this pod.
 #                       Set it to "none" when connecting some other way (e.g. a direct TCP port).
@@ -295,6 +297,30 @@ do_update() {
     do_install   # reinstalls only if requirements.txt changed
 }
 
+# ----------------------------- Memory limit ---------------------------------
+# A pod may only use part of its host's RAM, but WanGP sees all of it, plans its
+# model caching accordingly and gets killed by the kernel ("Killed") when it goes
+# over the pod's limit. Prints the RAM budget (GB) to give WanGP, or nothing.
+ram_budget_gb() {
+    if [ -n "${WANGP_MAX_RAM:-}" ]; then
+        [ "$WANGP_MAX_RAM" = 0 ] || printf '%s' "$WANGP_MAX_RAM"
+        return 0
+    fi
+    local limit="" file host_kb limit_gb
+    for file in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memory.limit_in_bytes; do
+        [ -r "$file" ] && { limit="$(cat "$file")"; break; }
+    done
+    [[ "$limit" =~ ^[0-9]+$ ]] || return 0
+    host_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+    [ "$limit" -lt $(( ${host_kb:-0} * 1024 )) ] || return 0   # no limit below the host's RAM
+    limit_gb=$(( limit / 1024 / 1024 / 1024 ))
+    # Keep 10% (at least 4 GB) for everything WanGP does not count.
+    local margin=$(( limit_gb / 10 ))
+    [ "$margin" -ge 4 ] || margin=4
+    [ $(( limit_gb - margin )) -ge 8 ] && printf '%s' $(( limit_gb - margin ))
+    return 0
+}
+
 # ------------------------------- Plugins ------------------------------------
 # Copy the WanGP plugins shipped with this repository into WanGP (refreshed at every
 # launch) and enable each of them the first time it is installed.
@@ -342,6 +368,12 @@ do_start() {
     local extra=()
     # shellcheck disable=SC2206  # intentional word splitting of user-supplied flags
     [ -n "$WANGP_ARGS" ] && extra=($WANGP_ARGS)
+    local max_ram
+    max_ram="$(ram_budget_gb)"
+    if [ -n "$max_ram" ] && [[ " $WANGP_ARGS " != *" --max-ram "* ]]; then
+        args+=(--max-ram "$max_ram")
+        log "This pod's memory limit is below the host's RAM: WanGP gets a RAM budget of ${max_ram} GB."
+    fi
 
     install_plugins
     mkdir -p "$HF_HOME"
