@@ -79,7 +79,37 @@ bash setup.sh            # install if needed, then launch
 bash setup.sh install    # install / repair only
 bash setup.sh start      # launch only
 bash setup.sh update     # pull the latest WanGP and refresh dependencies
+bash setup.sh run ARGS   # run wgp.py with your own arguments, e.g. --process queue.zip
 ```
+
+## Batch: one generation per image of a folder
+
+`batch_images.py` applies one settings file to every image of a folder, with the same audio
+file for all of them. WanGP runs without the web UI and loads the model once for the whole
+folder.
+
+1. In the web UI, set up one generation the way you want it and save it with **Export Settings**.
+   Upload that `.json`, the images and the audio file to the pod (e.g. with Jupyter Lab).
+2. Stop the web UI, which would otherwise compete for the GPU: `pkill -f setup.sh; pkill -f wgp.py`
+3. Check the jobs without generating, then start the batch in the background:
+
+```bash
+cd /workspace/WanGP-runpod
+python3 batch_images.py --settings /workspace/my_settings.json --images /workspace/input_images \
+    --audio /workspace/song.mp3 --output-dir /workspace/batch_outputs --check
+
+nohup python3 batch_images.py --settings /workspace/my_settings.json --images /workspace/input_images \
+    --audio /workspace/song.mp3 --output-dir /workspace/batch_outputs > /workspace/batch.log 2>&1 &
+tail -n 40 /workspace/batch.log
+```
+
+Each image is used as the start frame, the first reference image or both, whichever the
+settings file uses (`--use-as start|reference|both` overrides this). Results are named after
+their image, e.g. `photo12_seed123456789.mp4`.
+
+Running the same command again only processes the images that have no result yet, so an
+interrupted batch can simply be restarted. Other options: `--limit N` (first N images only),
+`--redo` (generate everything again), `--prompt "..."` (replace the prompt).
 
 ## Settings
 

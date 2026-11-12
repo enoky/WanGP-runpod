@@ -5,6 +5,7 @@
 #   bash setup.sh install    install / repair only
 #   bash setup.sh start      launch only
 #   bash setup.sh update     pull the latest WanGP and refresh its dependencies
+#   bash setup.sh run ARGS   run "python wgp.py ARGS" in the WanGP environment (no web UI flags added)
 #
 # Everything that must survive a pod restart lives under /workspace (the network
 # volume): the WanGP checkout, models, LoRAs, outputs and an archive of the
@@ -339,11 +340,24 @@ do_start() {
     done
 }
 
+# Run wgp.py with the given arguments only, e.g. headless queue processing.
+do_run() {
+    install_system_packages
+    restore_python_env
+    [ -x "$VENV_DIR/bin/python" ] && [ -f "$STAMP_FILE" ] || die "WanGP is not installed yet, run: bash setup.sh install"
+    mkdir -p "$HF_HOME"
+    cd "$WANGP_DIR"
+    # shellcheck disable=SC1091
+    source "$VENV_DIR/bin/activate"
+    exec python wgp.py "$@"
+}
+
 case "${1:-all}" in
     all)     do_install; do_start ;;
     install) do_install; log "Done. Launch with: bash setup.sh start" ;;
     start)   do_start ;;
     update)  do_update; log "Done. Launch with: bash setup.sh start" ;;
-    -h|--help|help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
-    *) die "Unknown command '$1' (use: install, start, update)" ;;
+    run)     shift; do_run "$@" ;;
+    -h|--help|help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) die "Unknown command '$1' (use: install, start, update, run)" ;;
 esac
