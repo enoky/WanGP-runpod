@@ -79,7 +79,31 @@ bash setup.sh            # install if needed, then launch
 bash setup.sh install    # install / repair only
 bash setup.sh start      # launch only
 bash setup.sh update     # pull the latest WanGP and refresh dependencies
+bash setup.sh run ARGS   # run wgp.py with your own arguments, e.g. --process queue.zip
 ```
+
+## Image Folder Batch plugin
+
+This repository ships a WanGP plugin that runs one generation per image of a folder, all with
+the same settings and the same audio file. `setup.sh` copies it into WanGP and enables it at
+every start, so it appears in the app bar as **Image Folder Batch**.
+
+1. In the **Media Generator**, set up one generation the way you want it: model, prompt,
+   resolution, length, and how images and audio are used. Test it there if you like.
+2. Open **Image Folder Batch**. Give the images, either as a folder on the pod
+   (e.g. `/workspace/input_images`) or by uploading them, and the audio file.
+3. Press **Check** to see what will be generated, then **Start**.
+
+Each image becomes the start frame, the first reference image or both, whichever the settings
+use; "Use each image as" overrides this. The generations join WanGP's normal queue and their
+results are named after their image, e.g. `photo12_seed123456789.mp4`.
+
+Under "Settings and options" you can use an exported settings file instead of the Media
+Generator's settings, replace the prompt, or limit the run to the first N images. Images that
+already have a result in the outputs folder are skipped, so pressing **Start** again after an
+interruption only generates what is missing.
+
+After pulling a new version of this repository, restart WanGP to load the updated plugin.
 
 ## Settings
 
