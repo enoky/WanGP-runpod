@@ -82,34 +82,28 @@ bash setup.sh update     # pull the latest WanGP and refresh dependencies
 bash setup.sh run ARGS   # run wgp.py with your own arguments, e.g. --process queue.zip
 ```
 
-## Batch: one generation per image of a folder
+## Image Folder Batch plugin
 
-`batch_images.py` applies one settings file to every image of a folder, with the same audio
-file for all of them. WanGP runs without the web UI and loads the model once for the whole
-folder.
+This repository ships a WanGP plugin that runs one generation per image of a folder, all with
+the same settings and the same audio file. `setup.sh` copies it into WanGP and enables it at
+every start, so it appears in the app bar as **Image Folder Batch**.
 
-1. In the web UI, set up one generation the way you want it and save it with **Export Settings**.
-   Upload that `.json`, the images and the audio file to the pod (e.g. with Jupyter Lab).
-2. Stop the web UI, which would otherwise compete for the GPU: `pkill -f setup.sh; pkill -f wgp.py`
-3. Check the jobs without generating, then start the batch in the background:
+1. In the **Media Generator**, set up one generation the way you want it: model, prompt,
+   resolution, length, and how images and audio are used. Test it there if you like.
+2. Open **Image Folder Batch**. Give the images, either as a folder on the pod
+   (e.g. `/workspace/input_images`) or by uploading them, and the audio file.
+3. Press **Check** to see what will be generated, then **Start**.
 
-```bash
-cd /workspace/WanGP-runpod
-python3 batch_images.py --settings /workspace/my_settings.json --images /workspace/input_images \
-    --audio /workspace/song.mp3 --output-dir /workspace/batch_outputs --check
+Each image becomes the start frame, the first reference image or both, whichever the settings
+use; "Use each image as" overrides this. The generations join WanGP's normal queue and their
+results are named after their image, e.g. `photo12_seed123456789.mp4`.
 
-nohup python3 batch_images.py --settings /workspace/my_settings.json --images /workspace/input_images \
-    --audio /workspace/song.mp3 --output-dir /workspace/batch_outputs > /workspace/batch.log 2>&1 &
-tail -n 40 /workspace/batch.log
-```
+Under "Settings and options" you can use an exported settings file instead of the Media
+Generator's settings, replace the prompt, or limit the run to the first N images. Images that
+already have a result in the outputs folder are skipped, so pressing **Start** again after an
+interruption only generates what is missing.
 
-Each image is used as the start frame, the first reference image or both, whichever the
-settings file uses (`--use-as start|reference|both` overrides this). Results are named after
-their image, e.g. `photo12_seed123456789.mp4`.
-
-Running the same command again only processes the images that have no result yet, so an
-interrupted batch can simply be restarted. Other options: `--limit N` (first N images only),
-`--redo` (generate everything again), `--prompt "..."` (replace the prompt).
+After pulling a new version of this repository, restart WanGP to load the updated plugin.
 
 ## Settings
 

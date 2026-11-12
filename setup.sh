@@ -277,6 +277,7 @@ do_install() {
     detect_gpu
     choose_stack
     fetch_wangp
+    install_plugins
     install_python_env
     verify_install
 }
@@ -292,6 +293,38 @@ do_update() {
         git -C "$WANGP_DIR" pull --ff-only
     fi
     do_install   # reinstalls only if requirements.txt changed
+}
+
+# ------------------------------- Plugins ------------------------------------
+# Copy the WanGP plugins shipped with this repository into WanGP (refreshed at every
+# launch) and enable each of them the first time it is installed.
+install_plugins() {
+    local source_dir plugin name config="$WANGP_DIR/wgp_config.json"
+    source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/plugins"
+    [ -d "$source_dir" ] && [ -d "$WANGP_DIR/plugins" ] || return 0
+    for plugin in "$source_dir"/*/; do
+        [ -f "$plugin/plugin.py" ] || continue
+        name="$(basename "$plugin")"
+        if [ ! -d "$WANGP_DIR/plugins/$name" ]; then
+            log "Installing the WanGP plugin '$name'"
+            # Without a config file, or without a plugin list in it, WanGP enables every plugin.
+            if [ -f "$config" ] && command -v python3 >/dev/null 2>&1; then
+                python3 - "$config" "$name" <<'PY' || warn "Enable '$name' yourself in WanGP's Apps & PlugIn Manager."
+import json, sys
+path, name = sys.argv[1:3]
+with open(path, encoding="utf-8") as reader:
+    config = json.load(reader)
+enabled = config.get("enabled_plugins")
+if isinstance(enabled, list) and name not in enabled:
+    enabled.append(name)
+    with open(path, "w", encoding="utf-8") as writer:
+        json.dump(config, writer, indent=4)
+PY
+            fi
+        fi
+        mkdir -p "$WANGP_DIR/plugins/$name"
+        cp -r "$plugin". "$WANGP_DIR/plugins/$name/"
+    done
 }
 
 # ------------------------------- Launch -------------------------------------
@@ -310,6 +343,7 @@ do_start() {
     # shellcheck disable=SC2206  # intentional word splitting of user-supplied flags
     [ -n "$WANGP_ARGS" ] && extra=($WANGP_ARGS)
 
+    install_plugins
     mkdir -p "$HF_HOME"
     cd "$WANGP_DIR"
     # shellcheck disable=SC1091
@@ -345,6 +379,7 @@ do_run() {
     install_system_packages
     restore_python_env
     [ -x "$VENV_DIR/bin/python" ] && [ -f "$STAMP_FILE" ] || die "WanGP is not installed yet, run: bash setup.sh install"
+    install_plugins
     mkdir -p "$HF_HOME"
     cd "$WANGP_DIR"
     # shellcheck disable=SC1091
