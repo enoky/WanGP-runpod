@@ -103,6 +103,15 @@ Generator's settings, replace the prompt, or limit the run to the first N images
 already have a result in the outputs folder are skipped, so pressing **Start** again after an
 interruption only generates what is missing.
 
+**Shutting the pod down afterwards.** "When all the generations are complete" (under
+"Settings and options") can stop or terminate the pod once the batch is finished, so that it
+stops costing GPU time. There is a 60 second countdown first; pressing **Stop** during it keeps
+the pod running. A batch stopped by hand never shuts the pod down.
+
+- **Stop** keeps the pod and its disks, but RunPod does not allow it for a pod with a network volume.
+- **Terminate** deletes the pod. Files on a network volume survive; everything else, including a
+  regular (non-network) `/workspace` volume, is lost.
+
 After pulling a new version of this repository, restart WanGP to load the updated plugin.
 
 ## Settings

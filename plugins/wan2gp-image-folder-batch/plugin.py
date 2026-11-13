@@ -6,18 +6,21 @@ Generator, or an exported settings file) and the same audio file, and they
 are added to WanGP's normal queue.
 """
 import os
+import time
 
 import gradio as gr
 
 from shared.gradio.progress import WangpProgress
 from shared.utils.plugins import WAN2GPPlugin
 
+from . import pod_control
 from .batch_plan import USE_AS_CHOICES, PlanError, build_plan, files_of, load_settings_file
 
 PlugIn_Name = "Image Folder Batch"
 PlugIn_Id = "ImageFolderBatch"
 FROM_FORM = "The current settings of the Media Generator"
 FROM_FILE = "An exported settings file (.json)"
+SHUTDOWN_DELAY = 60  # seconds left to press Stop before the pod is shut down
 
 INTRO = """**One generation per image.** Each image of the folder becomes the start frame and / or the reference image
 of its own generation. Everything else (model, prompt, resolution, length...) and the audio file are the same for all of them.
@@ -78,7 +81,7 @@ class ImageFolderBatchPlugin(WAN2GPPlugin):
 
     # ----------------------------------------------------------------------- UI
     def create_ui(self, api_session):
-        active_job = {"job": None}
+        active_job = {"job": None, "shutdown": None}
 
         def check(state, *inputs):
             try:
@@ -87,9 +90,31 @@ class ImageFolderBatchPlugin(WAN2GPPlugin):
                 raise gr.Error(str(error))
             return description if jobs else description + "\n\nNothing to do."
 
-        def start(state, source, settings_file, folder, uploads, audio_upload, audio_path, use_as, prompt, skip_done, limit, progress=WangpProgress()):
+        def shutdown_pod(action, progress):
+            """Counts down, then stops or terminates the pod. Returns the lines to add to the report."""
+            verb = "terminated" if action == pod_control.TERMINATE else "stopped"
+            reason = pod_control.unavailable_reason()
+            if reason:
+                return [f"The pod was left running: {reason}."]
+            active_job["shutdown"] = "pending"
+            try:
+                for remaining in range(SHUTDOWN_DELAY, 0, -1):
+                    if active_job.get("shutdown") == "cancelled":
+                        return ["Pod shutdown cancelled: the pod was left running."]
+                    progress(1.0, desc=f"The pod will be {verb} in {remaining}s - press Stop to keep it running")
+                    time.sleep(1)
+                if active_job.get("shutdown") == "cancelled":
+                    return ["Pod shutdown cancelled: the pod was left running."]
+            finally:
+                active_job["shutdown"] = None
+            ok, message = pod_control.shutdown(action)
+            print(f"[{PlugIn_Name}] pod {action}: {message}")
+            return [f"The pod is being {verb}." if ok else message]
+
+        def start(state, source, settings_file, folder, uploads, audio_upload, audio_path, use_as, prompt, skip_done, limit, when_done,
+                  progress=WangpProgress()):
             previous = active_job.get("job")
-            if previous is not None and not previous.done:
+            if previous is not None and not previous.done or active_job.get("shutdown"):
                 raise gr.Error("A batch is already running. Stop it first, or wait for it to finish.")
             try:
                 jobs, images, stems, _skipped, description = self._plan(state, source, settings_file, folder, uploads, audio_upload, audio_path,
@@ -133,11 +158,17 @@ class ImageFolderBatchPlugin(WAN2GPPlugin):
                 summary += ["", "Errors:"] + [f"  {error}" for error in errors]
             if missing:
                 summary += ["", "Press Start again to generate only the missing ones."]
+            if when_done in (pod_control.STOP, pod_control.TERMINATE):
+                # A batch stopped by hand keeps the pod: the user is there and may want to go on.
+                summary += [""] + (["The batch was stopped: the pod was left running."] if result.cancelled else shutdown_pod(when_done, progress))
             return "\n".join(summary), (files or None)
 
         def stop():
             job = active_job.get("job")
-            if job is not None and not job.done:
+            if active_job.get("shutdown") == "pending":
+                active_job["shutdown"] = "cancelled"
+                gr.Info("The pod will be left running.")
+            elif job is not None and not job.done:
                 job.cancel()
                 gr.Info("Stopping the batch...")
             else:
@@ -167,6 +198,13 @@ class ImageFolderBatchPlugin(WAN2GPPlugin):
                     skip_done = gr.Checkbox(label="Skip images that already have a result in the outputs folder", value=True)
                     limit = gr.Number(label="Only the first N images (0 = all)", value=0, precision=0, minimum=0)
 
+            pod_reason = pod_control.unavailable_reason()
+            when_done = gr.Dropdown(label="When all the generations are complete", choices=pod_control.CHOICES, value=pod_control.KEEP,
+                                    interactive=not pod_reason,
+                                    info=(f"Not available: {pod_reason}." if pod_reason else
+                                          f"The pod is shut down {SHUTDOWN_DELAY}s after the last generation, unless you press Stop. "
+                                          "A pod with a network volume cannot be stopped, only terminated."))
+
             with gr.Row():
                 check_btn = gr.Button("Check")
                 start_btn = gr.Button("Start", variant="primary")
@@ -179,5 +217,5 @@ class ImageFolderBatchPlugin(WAN2GPPlugin):
 
         plan_inputs = [self.state, source, settings_file, folder, uploads, audio_upload, audio_path, use_as, prompt, skip_done, limit]
         check_btn.click(fn=check, inputs=plan_inputs, outputs=[report])
-        WangpProgress.bind(start_btn.click, start, inputs=plan_inputs, outputs=[report, results], component=batch_progress)
+        WangpProgress.bind(start_btn.click, start, inputs=[*plan_inputs, when_done], outputs=[report, results], component=batch_progress)
         stop_btn.click(fn=stop, queue=False)
