@@ -94,23 +94,31 @@ every start, so it appears in the app bar as **Image Folder Batch**.
    (e.g. `/workspace/input_images`) or by uploading them, and the audio file.
 3. Press **Check** to see what will be generated, then **Start**.
 
+**The batch does not need the browser.** It runs in a separate WanGP process on the pod, so you
+can close the page or let a tablet sleep. Open the tab again at any time to see the progress,
+the latest log lines and the results, or to press **Stop**. While a batch runs, the Media
+Generator has to wait for the GPU.
+
 Each image becomes the start frame, the first reference image or both, whichever the settings
-use; "Use each image as" overrides this. The generations join WanGP's normal queue and their
-results are named after their image, e.g. `photo12_seed123456789.mp4`.
+use; "Use each image as" overrides this. Results go to the usual outputs folder, named after
+their image, e.g. `photo12_seed123456789.mp4`.
 
 Under "Settings and options" you can use an exported settings file instead of the Media
 Generator's settings, replace the prompt, or limit the run to the first N images. Images that
 already have a result in the outputs folder are skipped, so pressing **Start** again after an
 interruption only generates what is missing.
 
-**Shutting the pod down afterwards.** "When all the generations are complete" (under
-"Settings and options") can stop or terminate the pod once the batch is finished, so that it
-stops costing GPU time. There is a 60 second countdown first; pressing **Stop** during it keeps
-the pod running. A batch stopped by hand never shuts the pod down.
+**Shutting the pod down afterwards.** "When all the generations are complete" can stop or
+terminate the pod once the batch is finished, so that it stops costing GPU time. There is a
+60 second countdown first; pressing **Stop** during it keeps the pod running. A batch stopped
+by hand never shuts the pod down.
 
 - **Stop** keeps the pod and its disks, but RunPod does not allow it for a pod with a network volume.
 - **Terminate** deletes the pod. Files on a network volume survive; everything else, including a
   regular (non-network) `/workspace` volume, is lost.
+
+The batch's job list, status and full log are in `/workspace/WanGP/image_folder_batch/`
+(`tail -n 40 /workspace/WanGP/image_folder_batch/batch.log`).
 
 After pulling a new version of this repository, restart WanGP to load the updated plugin.
 
