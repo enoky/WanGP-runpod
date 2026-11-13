@@ -1,14 +1,14 @@
 {
   "name": "Image Folder Batch",
   "author": "enoky",
-  "version": "1.0.0",
-  "description": "Queues one generation per image of a folder, all with the same settings and the same audio file.",
+  "version": "2.0.0",
+  "description": "Runs one generation per image of a folder, all with the same settings and the same audio file.",
   "type": "app",
   "date": "2026-11-12",
   "wan2gp_version": "19.29",
   "info_card": {
     "tagline": "One Generation per Image",
     "description": "Pick a folder of images: each one becomes the start frame and/or the reference image of its own generation, using the settings of the Media Generator (or an exported settings file) and one shared audio file.",
-    "details": "The generations join WanGP's normal queue."
+    "details": "Runs on the server without the browser; can shut a RunPod pod down when done."
   }
 }
