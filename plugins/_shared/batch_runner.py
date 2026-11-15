@@ -2,7 +2,7 @@
 
 Started by the plugin as a separate process:
 
-    python batch_runner.py --dir WORK_DIR [--upload-source DIR --upload-to REMOTE:FOLDER]
+    python batch_runner.py --dir WORK_DIR [--upload-source DIR --upload-to REMOTE:FOLDER [--upload-each]]
                            [--shutdown stop|terminate] [--delay 60] -- COMMAND...
 
 It runs COMMAND (WanGP's headless queue processing), keeps WORK_DIR/status.json up
@@ -98,6 +98,7 @@ def main():
     parser.add_argument("--delay", type=int, default=60)
     parser.add_argument("--upload-source", default="")
     parser.add_argument("--upload-to", default="")
+    parser.add_argument("--upload-each", action="store_true", help="also upload the results while the queue runs")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -127,6 +128,10 @@ def main():
     write_status(work_dir, phase="running", pid=os.getpid(), started=time.time(), finished=None, returncode=None,
                  shutdown=args.shutdown, shutdown_message="", upload_message="", deadline=None)
     progress = Progress()
+    live = drive_upload.LiveUploader(args.upload_source, args.upload_to, work_dir, say) if args.upload_each and args.upload_to else None
+    uploaded_for = 0
+    if live is not None and not live.enabled:
+        say("Uploads during the run are off: " + drive_upload.unavailable_reason(args.upload_to))
     try:
         child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     except OSError as error:
@@ -144,8 +149,14 @@ def main():
             break
         log.write(data)
         progress.feed(data)
+        if live is not None:
+            if len(progress.completed) > uploaded_for:
+                uploaded_for = len(progress.completed)
+                live.notify()
+            else:
+                live.poll()
         if progress.changed and time.time() - saved > 1:
-            write_status(work_dir, **progress.fields())
+            write_status(work_dir, **progress.fields(), **(live.fields() if live is not None else {}))
             progress.changed, saved = False, time.time()
         if stop["requested"]:
             stop_deadline = stop_deadline or time.time() + 20
@@ -156,7 +167,9 @@ def main():
     except subprocess.TimeoutExpired:
         child.kill()
         returncode = child.wait()
-    write_status(work_dir, **progress.fields())
+    if live is not None:
+        live.finish()
+    write_status(work_dir, **progress.fields(), **(live.fields() if live is not None else {}))
 
     if stop["requested"]:
         say("Stopped on request.")

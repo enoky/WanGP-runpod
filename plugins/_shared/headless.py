@@ -81,15 +81,18 @@ def other_active_run(work_dir):
     return None
 
 
-def launch(work_dir, queue_file, output_dir, shutdown, delay, wangp_argv, python=sys.executable, upload_to=""):
+def launch(work_dir, queue_file, output_dir, shutdown, delay, wangp_argv, python=sys.executable, upload_to="", upload_each=False):
     """Starts the detached runner on queue_file (already written in work_dir). Returns its Popen object."""
     os.makedirs(output_dir, exist_ok=True)
     with open(os.path.join(work_dir, batch_runner.LOG_FILE), "wb"):
         pass  # a new log for each run
     batch_runner.write_status(work_dir, phase="running", pid=None, started=time.time(), finished=None, returncode=None,
                               shutdown=shutdown, shutdown_message="", upload_message="", deadline=None, current=0, total=0,
+                              live_uploads_ok=0, live_uploads_failed=0,
                               completed=[], failed=[], skipped=[])
     upload = ["--upload-source", output_dir, "--upload-to", upload_to] if upload_to else []
+    if upload and upload_each:
+        upload.append("--upload-each")
     command = [python, RUNNER, "--dir", work_dir, *upload, "--shutdown", shutdown, "--delay", str(delay), "--",
                python, "wgp.py", "--process", queue_file, "--output-dir", output_dir, *headless_args(wangp_argv, own_rss_gb())]
     # Its own session: it survives the browser, and the web server if that goes away.

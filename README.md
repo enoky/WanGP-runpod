@@ -163,6 +163,12 @@ rclone and its configuration are stored on the volume (`/workspace/.rclone`,
 `/workspace/rclone.conf`), so this survives pod restarts. Keep `rclone.conf` private: it gives
 access to your Drive.
 
+With "...and also upload each result as soon as it is generated" ticked (the default), every
+finished result is sent to Drive while the queue keeps running, so the upload at the end is
+short and the pod can be shut down right after the last task. The newest result is left for
+the following pass, in case WanGP is still writing it; the upload at the end of the queue
+sends whatever is missing.
+
 In the Queue Runner, the destination is written `gdrive:WanGP-outputs` (the remote name set up
 above, a colon, a folder in your Drive). Files already in Drive are skipped, so uploading the
 same folder again only sends what is new. If the upload at the end of a queue fails, the pod is
