@@ -122,6 +122,28 @@ The batch's job list, status and full log are in `/workspace/WanGP/image_folder_
 
 After pulling a new version of this repository, restart WanGP to load the updated plugin.
 
+## Queue Runner plugin
+
+A second plugin, **Queue Runner**, processes a whole WanGP queue file and can then shut the pod
+down. It takes a `queue.json` or a queue `.zip` saved with WanGP's *Save Queue*.
+
+1. Open **Queue Runner** and upload the queue file, or type its path on the pod.
+2. Choose what happens "When the queue is finished": leave the pod running, stop it or terminate
+   it (the same choices and 60 second countdown as in Image Folder Batch).
+3. Press **Check** to see what will be generated, then **Start**.
+
+Like the image batch, the queue runs in a separate WanGP process on the pod, so the browser can
+be closed. The tab shows how many tasks are done, an estimate of the time left and the latest
+log lines.
+
+Completed tasks are remembered. After an interruption or a pod restart, press **Start** again
+with the same file, or with no file at all, and it continues with the tasks that are left;
+tasks that failed are tried again. "Forget the completed tasks" under Options starts the queue
+over. Only one headless run (queue or image batch) can be active at a time.
+
+The queue copy, progress and full log are in `/workspace/WanGP/queue_runner/`
+(`tail -n 40 /workspace/WanGP/queue_runner/batch.log`).
+
 ## Settings
 
 Set these as environment variables (in the pod template or in front of the command).

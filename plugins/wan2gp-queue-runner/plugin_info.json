@@ -1,0 +1,14 @@
+{
+  "name": "Queue Runner",
+  "author": "enoky",
+  "version": "1.0.0",
+  "description": "Processes a WanGP queue file without the browser, and can shut the RunPod pod down when it is finished.",
+  "type": "app",
+  "date": "2026-11-15",
+  "wan2gp_version": "19.29",
+  "info_card": {
+    "tagline": "Run a Queue File, Then Shut Down",
+    "description": "Give a queue.json or a queue .zip: it is processed on the server without the browser, and the pod can be stopped or terminated when the last task is done.",
+    "details": "Completed tasks are remembered, so an interrupted queue continues where it stopped."
+  }
+}

@@ -350,6 +350,8 @@ PY
         fi
         mkdir -p "$WANGP_DIR/plugins/$name"
         cp -r "$plugin". "$WANGP_DIR/plugins/$name/"
+        # Modules common to the plugins of this repository.
+        [ -d "$source_dir/_shared" ] && cp "$source_dir"/_shared/*.py "$WANGP_DIR/plugins/$name/"
     done
 }
 
