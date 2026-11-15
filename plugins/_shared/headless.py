@@ -63,6 +63,9 @@ def alive(pid):
 
 def is_active(work_dir):
     status = batch_runner.read_status(work_dir)
+    if status.get("phase") == "running" and status.get("pid") is None:
+        # Just launched: the runner has not written its process id yet.
+        return time.time() - (status.get("started") or 0) < 20
     return status.get("phase") in ("running", "uploading", "countdown") and alive(status.get("pid"))
 
 
@@ -91,7 +94,7 @@ def launch(work_dir, queue_file, output_dir, shutdown, delay, wangp_argv, python
                python, "wgp.py", "--process", queue_file, "--output-dir", output_dir, *headless_args(wangp_argv, own_rss_gb())]
     # Its own session: it survives the browser, and the web server if that goes away.
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    batch_runner.write_status(work_dir, pid=process.pid)
+    # From here on only the runner writes the status file: two writers could undo each other's changes.
     with open(ACTIVE_MARKER, "w", encoding="utf-8") as writer:
         writer.write(os.path.abspath(work_dir))
     return process
@@ -110,8 +113,8 @@ def stop(work_dir):
         return "The pod will be left running."
     try:
         os.kill(int(status["pid"]), signal.SIGTERM)
-    except (OSError, KeyError, ValueError):
-        return "The run could not be stopped."
+    except (OSError, KeyError, ValueError, TypeError):
+        return "The run is still starting: press Stop again in a few seconds."
     return "Stopping..."
 
 

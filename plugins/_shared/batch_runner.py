@@ -17,6 +17,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -82,9 +83,11 @@ def write_status(work_dir, **changes):
     status = read_status(work_dir)
     status.update(changes)
     path = os.path.join(work_dir, STATUS_FILE)
-    with open(path + ".tmp", "w", encoding="utf-8") as writer:
+    # A name of its own: the web server and the runner must never share a temporary file.
+    temporary = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    with open(temporary, "w", encoding="utf-8") as writer:
         json.dump(status, writer, indent=2)
-    os.replace(path + ".tmp", path)
+    os.replace(temporary, path)
     return status
 
 

@@ -189,7 +189,7 @@ class QueueRunnerPlugin(WAN2GPPlugin):
                 self.release_model()
                 source = queue_file.keep_source(source, self.work_dir)
                 # Reset the previous run's task list before describing the new run, so that the two are never mixed up.
-                batch_runner.write_status(self.work_dir, phase="starting", current=0, total=0, completed=[], failed=[], skipped=[])
+                batch_runner.write_status(self.work_dir, phase="starting", pid=None, current=0, total=0, completed=[], failed=[], skipped=[])
                 run_queue = queue_file.write_run_file(source, tasks, numbers, self.work_dir)
                 with open(os.path.join(self.work_dir, RUN_FILE), "w", encoding="utf-8") as writer:
                     json.dump({"fingerprint": fingerprint, "total": len(tasks), "numbers": numbers, "output_dir": output_dir}, writer)
