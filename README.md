@@ -146,8 +146,8 @@ The queue copy, progress and full log are in `/workspace/WanGP/queue_runner/`
 
 ## Uploading results to Google Drive
 
-The Queue Runner can copy the output folder to Google Drive, either when the queue is finished
-(before any pod shutdown) or at once with **Upload now**. It uses [rclone](https://rclone.org),
+Both plugins (Queue Runner and Image Folder Batch) can copy the output folder to Google Drive,
+either when the run is finished (before any pod shutdown) or at once with **Upload now**. It uses [rclone](https://rclone.org),
 which has to be connected to your Google account once:
 
 ```bash
@@ -169,9 +169,9 @@ short and the pod can be shut down right after the last task. The newest result 
 the following pass, in case WanGP is still writing it; the upload at the end of the queue
 sends whatever is missing.
 
-In the Queue Runner, the destination is written `gdrive:WanGP-outputs` (the remote name set up
+In the plugins, the destination is written `gdrive:WanGP-outputs` (the remote name set up
 above, a colon, a folder in your Drive). Files already in Drive are skipped, so uploading the
-same folder again only sends what is new. If the upload at the end of a queue fails, the pod is
+same folder again only sends what is new. If the upload at the end of a run fails, the pod is
 left running instead of being shut down.
 
 To upload by hand from a terminal:
