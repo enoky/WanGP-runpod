@@ -18,7 +18,7 @@ import gradio as gr
 from shared.utils.plugins import WAN2GPPlugin
 from shared.utils.process_locks import acquire_GPU_ressources, any_GPU_process_running, release_GPU_ressources
 
-from . import batch_status, pod_control
+from . import batch_status, drive_upload, pod_control
 from .batch_plan import USE_AS_CHOICES, PlanError, build_plan, load_settings_file
 
 PlugIn_Name = "Image Folder Batch"
@@ -43,7 +43,7 @@ class ImageFolderBatchPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = PlugIn_Name
-        self.version = "2.0.0"
+        self.version = "2.1.0"
         self.description = "Runs one generation per image of a folder, all with the same settings and the same audio file."
 
     def setup_ui(self):
@@ -124,7 +124,13 @@ class ImageFolderBatchPlugin(WAN2GPPlugin):
                 raise gr.Error(str(error))
             return description if jobs else description + "\n\nNothing to do."
 
-        def start(state, source, settings_file, folder, uploads, audio_upload, audio_path, use_as, prompt, skip_done, limit, when_done):
+        def upload_now(destination):
+            gr.Info(drive_upload.start_manual_upload(self._output_dir(), destination or "", self.work_dir))
+            text, files, _active = self._report()
+            return text, files
+
+        def start(state, source, settings_file, folder, uploads, audio_upload, audio_path, use_as, prompt, skip_done, limit, when_done,
+                  upload_when_done, destination, upload_each):
             if batch_status.is_active(self.work_dir):
                 raise gr.Error("A batch is already running. Stop it first, or wait for it to finish.")
             try:
@@ -134,6 +140,11 @@ class ImageFolderBatchPlugin(WAN2GPPlugin):
                 raise gr.Error(str(error))
             if not jobs:
                 return description + "\n\nNothing to do.", gr.update()
+            upload_to = (destination or "").strip() if upload_when_done else ""
+            if upload_when_done:
+                reason = drive_upload.unavailable_reason(upload_to)
+                if reason:
+                    raise gr.Error(f"The results cannot be uploaded: {reason}. Fix this, or untick the upload.")
             if batch_status.headless.other_active_run(self.work_dir):
                 raise gr.Error("Another headless run (Queue Runner) is still going. Stop it first, or wait for it to finish.")
             if any_GPU_process_running(state, PlugIn_Id):
@@ -143,7 +154,8 @@ class ImageFolderBatchPlugin(WAN2GPPlugin):
             acquire_GPU_ressources(state, PlugIn_Id, PlugIn_Name, gr=gr)
             try:
                 self.release_model()
-                process = batch_status.launch(self.work_dir, jobs, images, stems, self._output_dir(), when_done, SHUTDOWN_DELAY, sys.argv[1:])
+                process = batch_status.launch(self.work_dir, jobs, images, stems, self._output_dir(), when_done, SHUTDOWN_DELAY, sys.argv[1:],
+                                              upload_to=upload_to, upload_each=bool(upload_each))
             except Exception as error:
                 release_GPU_ressources(state, PlugIn_Id)
                 raise gr.Error(f"The batch could not be started: {error}")
@@ -162,8 +174,9 @@ class ImageFolderBatchPlugin(WAN2GPPlugin):
             text, files, active = self._report()
             current_text = str(current_text or "")
             # A report showing a live state still needs its final update once the batch has ended.
-            live = current_text.startswith("RUNNING") or "Batch started" in current_text or "press Stop to keep it running" in current_text
-            if active or live:
+            live = (current_text.startswith("RUNNING") or "Batch started" in current_text or "press Stop to keep it running" in current_text
+                    or "Uploading the results" in current_text or "upload (RUNNING)" in current_text)
+            if active or live or drive_upload.manual_upload_running(self.work_dir):
                 return text, files
             return gr.update(), gr.update()
 
@@ -197,6 +210,18 @@ class ImageFolderBatchPlugin(WAN2GPPlugin):
                                     info=(f"Not available: {pod_reason}." if pod_reason else
                                           f"The pod is shut down {SHUTDOWN_DELAY}s after the last generation, unless you press Stop. "
                                           "A pod with a network volume cannot be stopped, only terminated."))
+            drive_reason = drive_upload.unavailable_reason()
+            with gr.Row():
+                upload_when_done = gr.Checkbox(label="Upload the results to Google Drive when the batch is finished, before any shutdown",
+                                               value=False, interactive=not drive_reason,
+                                               info=(f"Not available: {drive_reason}." if drive_reason else
+                                                     "The whole outputs folder is copied; files already in Drive are skipped. "
+                                                     "If the upload fails, the pod is left running."))
+                destination = gr.Textbox(label="Google Drive folder (rclone remote:folder)", value=drive_upload.DEFAULT_DESTINATION)
+                upload_btn = gr.Button("Upload now", size="sm", interactive=not drive_reason)
+            upload_each = gr.Checkbox(label="...and also upload each result as soon as it is generated", value=True, interactive=not drive_reason,
+                                      info="Runs beside the generation without slowing it. The final upload is then short, so the pod "
+                                           "can be shut down right after the last image. Only applies when the upload above is ticked.")
 
             with gr.Row():
                 check_btn = gr.Button("Check")
@@ -212,7 +237,8 @@ class ImageFolderBatchPlugin(WAN2GPPlugin):
 
         plan_inputs = [self.state, source, settings_file, folder, uploads, audio_upload, audio_path, use_as, prompt, skip_done, limit]
         check_btn.click(fn=check, inputs=plan_inputs, outputs=[report])
-        start_btn.click(fn=start, inputs=[*plan_inputs, when_done], outputs=[report, results])
+        start_btn.click(fn=start, inputs=[*plan_inputs, when_done, upload_when_done, destination, upload_each], outputs=[report, results])
+        upload_btn.click(fn=upload_now, inputs=[destination], outputs=[report, results])
         stop_btn.click(fn=stop, queue=False)
         refresh_btn.click(fn=refresh, outputs=[report, results])
         timer.tick(fn=refresh_if_active, inputs=[report], outputs=[report, results], show_progress="hidden")

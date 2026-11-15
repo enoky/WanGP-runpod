@@ -1,7 +1,7 @@
 {
   "name": "Image Folder Batch",
   "author": "enoky",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Runs one generation per image of a folder, all with the same settings and the same audio file.",
   "type": "app",
   "date": "2026-11-12",
