@@ -39,7 +39,7 @@ class QueueRunnerPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = PlugIn_Name
-        self.version = "1.1.0"
+        self.version = "1.2.0"
         self.description = "Processes a WanGP queue file without the browser, and can shut the RunPod pod down when it is finished."
 
     def setup_ui(self):
@@ -120,6 +120,11 @@ class QueueRunnerPlugin(WAN2GPPlugin):
         else:
             head = f"INTERRUPTED (the queue process is gone): {counts}."
         text = [head, f"Whole queue: {len(done)} of {total} task(s) completed. Results are in {run.get('output_dir')}"]
+        if status.get("live_uploads_ok") or status.get("live_uploads_failed"):
+            line = f"Uploads to Google Drive during this run: {status.get('live_uploads_ok', 0)} done"
+            if status.get("live_uploads_failed"):
+                line += f", {status['live_uploads_failed']} failed (retried by the following ones and by the final upload)"
+            text.append(line + ".")
         for key in ("upload_message", "shutdown_message"):
             if status.get(key):
                 text.append(status[key])
@@ -162,7 +167,7 @@ class QueueRunnerPlugin(WAN2GPPlugin):
             gr.Info(drive_upload.start_manual_upload(source, destination or "", self.work_dir))
             return self._report()[0]
 
-        def start(state, upload, path, skip_done, limit, output_dir, when_done, upload_when_done, destination):
+        def start(state, upload, path, skip_done, limit, output_dir, when_done, upload_when_done, destination, upload_each):
             if headless.is_active(self.work_dir):
                 raise gr.Error("A queue is already running. Stop it first, or wait for it to finish.")
             if headless.other_active_run(self.work_dir):
@@ -193,7 +198,8 @@ class QueueRunnerPlugin(WAN2GPPlugin):
                 run_queue = queue_file.write_run_file(source, tasks, numbers, self.work_dir)
                 with open(os.path.join(self.work_dir, RUN_FILE), "w", encoding="utf-8") as writer:
                     json.dump({"fingerprint": fingerprint, "total": len(tasks), "numbers": numbers, "output_dir": output_dir}, writer)
-                process = headless.launch(self.work_dir, run_queue, output_dir, when_done, SHUTDOWN_DELAY, sys.argv[1:], upload_to=upload_to)
+                process = headless.launch(self.work_dir, run_queue, output_dir, when_done, SHUTDOWN_DELAY, sys.argv[1:], upload_to=upload_to,
+                                          upload_each=bool(upload_each))
             except Exception as error:
                 release_GPU_ressources(state, PlugIn_Id)
                 raise gr.Error(f"The queue could not be started: {error}")
@@ -250,6 +256,9 @@ class QueueRunnerPlugin(WAN2GPPlugin):
                                                      "If the upload fails, the pod is left running."))
                 destination = gr.Textbox(label="Google Drive folder (rclone remote:folder)", value=drive_upload.DEFAULT_DESTINATION)
                 upload_btn = gr.Button("Upload now", size="sm", interactive=not drive_reason)
+            upload_each = gr.Checkbox(label="...and also upload each result as soon as it is generated", value=True, interactive=not drive_reason,
+                                      info="Runs beside the generation without slowing it. The final upload is then short, so the pod "
+                                           "can be shut down right after the last task. Only applies when the upload above is ticked.")
             with gr.Accordion("Options", open=False):
                 with gr.Row():
                     skip_done = gr.Checkbox(label="Skip the tasks already completed in an earlier run", value=True)
@@ -267,7 +276,7 @@ class QueueRunnerPlugin(WAN2GPPlugin):
         self.on_tab_outputs = [report]
 
         check_btn.click(fn=check, inputs=[upload, path, skip_done, limit], outputs=[report])
-        start_btn.click(fn=start, inputs=[self.state, upload, path, skip_done, limit, output_dir, when_done, upload_when_done, destination],
+        start_btn.click(fn=start, inputs=[self.state, upload, path, skip_done, limit, output_dir, when_done, upload_when_done, destination, upload_each],
                         outputs=[report])
         upload_btn.click(fn=upload_now, inputs=[output_dir, destination], outputs=[report])
         stop_btn.click(fn=stop, queue=False)

@@ -10,7 +10,7 @@ import subprocess
 import time
 
 DEFAULT_DESTINATION = "gdrive:WanGP-outputs"
-UPLOAD_LOG, UPLOAD_PID = "upload.log", "upload.pid"
+UPLOAD_LOG, UPLOAD_PID, LIVE_LOG = "upload.log", "upload.pid", "upload_during_run.log"
 
 
 def rclone_path():
@@ -51,6 +51,64 @@ def unavailable_reason(destination=None):
 def command(source, destination):
     return [rclone_path(), "copy", source, destination.strip(), "--config", config_path(),
             "--transfers", "4", "--stats", "30s", "--stats-one-line", "-v"]
+
+
+class LiveUploader:
+    """Uploads the new results while the queue is still running, without ever making it wait.
+
+    Each pass only looks at the files written since the last pass that succeeded, so it stays
+    quick however many results are already in Drive, and a failed pass is made up for by the
+    next one. Files modified in the last seconds are left for the next pass: WanGP may still
+    be writing them. The complete upload at the end of the queue catches whatever is left.
+    """
+    MARGIN, SETTLE = 120, 20  # seconds
+
+    def __init__(self, source, destination, work_dir, say):
+        self.source, self.destination, self.work_dir, self.say = source, destination, work_dir, say
+        self.enabled = not unavailable_reason(destination)
+        self.process, self.pass_started, self.pending = None, None, False
+        self.last_ok = time.time()
+        self.ok, self.failed = 0, 0
+
+    def notify(self):
+        """A result has just been finished."""
+        self.pending = True
+        self.poll()
+
+    def poll(self):
+        if not self.enabled:
+            return
+        if self.process is not None and self.process.poll() is not None:
+            self._record(self.process.returncode)
+        if self.process is None and self.pending and os.path.isdir(self.source):
+            self.pending = False
+            age = int(time.time() - self.last_ok + self.MARGIN)
+            extra = ["--max-age", f"{age}s", "--min-age", f"{self.SETTLE}s", "--no-traverse"]
+            try:
+                with open(os.path.join(self.work_dir, LIVE_LOG), "ab") as log:
+                    self.pass_started = time.time()
+                    self.process = subprocess.Popen(command(self.source, self.destination) + extra, stdout=log, stderr=subprocess.STDOUT,
+                                                    stdin=subprocess.DEVNULL)
+            except OSError as error:
+                self.say(f"Upload during the run could not be started: {error}")
+                self.enabled = False
+
+    def _record(self, returncode):
+        if returncode == 0:
+            self.ok += 1
+            self.last_ok = self.pass_started
+        else:
+            self.failed += 1
+            self.say(f"An upload during the run failed (rclone exit code {returncode}); the next one will retry.")
+        self.process = None
+
+    def finish(self):
+        """Waits for the pass in progress, if any."""
+        if self.process is not None:
+            self._record(self.process.wait())
+
+    def fields(self):
+        return {"live_uploads_ok": self.ok, "live_uploads_failed": self.failed}
 
 
 def upload(source, destination, log):
