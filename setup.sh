@@ -6,6 +6,7 @@
 #   bash setup.sh start      launch only
 #   bash setup.sh update     pull the latest WanGP and refresh its dependencies
 #   bash setup.sh run ARGS   run "python wgp.py ARGS" in the WanGP environment (no web UI flags added)
+#   bash setup.sh drive-setup  connect Google Drive (once), so that the plugins can upload results there
 #
 # Everything that must survive a pod restart lives under /workspace (the network
 # volume): the WanGP checkout, models, LoRAs, outputs and an archive of the
@@ -56,7 +57,11 @@ export UV_NO_CACHE=1                       # keep the (small) container disk fre
 export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-300}"
 export DEBIAN_FRONTEND=noninteractive
 export PYTHONUNBUFFERED=1
-export PATH="$UV_HOME/bin:$PATH"
+# rclone (Google Drive uploads) and its configuration live on the volume, see "drive-setup".
+RCLONE_DIR="$WORKSPACE/.rclone"
+export RCLONE_CONFIG="${RCLONE_CONFIG:-$WORKSPACE/rclone.conf}"
+export WORKSPACE
+export PATH="$UV_HOME/bin:$RCLONE_DIR:$PATH"
 
 # RunPod images put their own CUDA toolkit on LD_LIBRARY_PATH. Its cuBLAS would be
 # mixed with the (different) one bundled with PyTorch and every matrix product then
@@ -321,6 +326,83 @@ ram_budget_gb() {
     return 0
 }
 
+# ----------------------------- Google Drive --------------------------------
+install_rclone() {
+    [ -x "$RCLONE_DIR/rclone" ] && return 0
+    log "Installing rclone into $RCLONE_DIR"
+    mkdir -p "$RCLONE_DIR"
+    local zip="$RCLONE_DIR/rclone.zip" tag
+    if ! curl -fsSL -o "$zip" https://downloads.rclone.org/rclone-current-linux-amd64.zip; then
+        tag="$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/rclone/rclone/releases/latest | sed 's#.*/tag/##')"
+        curl -fsSL -o "$zip" "https://github.com/rclone/rclone/releases/download/$tag/rclone-$tag-linux-amd64.zip" \
+            || die "Could not download rclone"
+    fi
+    python3 - "$zip" "$RCLONE_DIR/rclone" <<'PY' || die "Could not unpack rclone"
+import sys, zipfile
+archive = zipfile.ZipFile(sys.argv[1])
+member = next(name for name in archive.namelist() if name.endswith("/rclone"))
+with open(sys.argv[2], "wb") as writer:
+    writer.write(archive.read(member))
+PY
+    chmod +x "$RCLONE_DIR/rclone"
+    rm -f "$zip"
+}
+
+# Connects a Google Drive account to rclone using only this terminal and any web
+# browser (a tablet is fine). rclone normally wants the browser on the same machine:
+# it waits for Google to send the browser back to http://127.0.0.1:53682/. Here that
+# final address is copied from the browser and replayed on the pod instead.
+do_drive_setup() {
+    local remote="${1:-gdrive}" out pid link google answer query i
+    install_system_packages
+    install_rclone
+    out="$(mktemp)"
+    log "Connecting Google Drive as the rclone remote '$remote' (configuration: $RCLONE_CONFIG)"
+    "$RCLONE_DIR/rclone" config create "$remote" drive scope=drive > "$out" 2>&1 &
+    pid=$!
+    link=""
+    for i in $(seq 1 30); do
+        link="$(grep -o 'http://127\.0\.0\.1:53682/auth?state=[A-Za-z0-9_-]*' "$out" | head -n1 || true)"
+        [ -n "$link" ] && break
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 1
+    done
+    google=""
+    [ -n "$link" ] && google="$(curl -s -o /dev/null -w '%{redirect_url}' "$link" || true)"
+    if [ -z "$google" ]; then
+        kill "$pid" 2>/dev/null || true
+        cat "$out" >&2; rm -f "$out"
+        die "rclone did not offer a sign-in link. Set the remote up by hand instead: $RCLONE_DIR/rclone config"
+    fi
+    cat <<EOF
+
+1. Open this address in your web browser and allow access to your Google Drive:
+
+$google
+
+2. The browser then lands on a page that CANNOT be displayed ("This site can't be
+   reached", address starting with http://127.0.0.1:53682/). That is expected.
+   Copy the complete address of that page from the address bar.
+
+EOF
+    read -r -p "3. Paste that address here and press Enter: " answer
+    query="${answer#*\?}"
+    if [ -z "$answer" ] || [ "$query" = "$answer" ] || [[ "$query" != *code=* ]]; then
+        kill "$pid" 2>/dev/null || true; rm -f "$out"
+        die "That is not the address of the sign-in result (it should contain '?state=...&code=...'). Run the command again."
+    fi
+    curl -fsS -o /dev/null "http://127.0.0.1:53682/?$query" || warn "rclone did not accept the address."
+    for i in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+    kill "$pid" 2>/dev/null || true
+    rm -f "$out"
+    if "$RCLONE_DIR/rclone" lsd "$remote:" --max-depth 1 >/dev/null 2>&1; then
+        log "Google Drive is connected. Destination to use in the plugins: $remote:WanGP-outputs"
+        log "Restart WanGP (bash setup.sh start) so that the plugins see it."
+    else
+        die "The connection to Google Drive could not be verified. Run the command again, or set it up by hand: $RCLONE_DIR/rclone config"
+    fi
+}
+
 # ------------------------------- Plugins ------------------------------------
 # Copy the WanGP plugins shipped with this repository into WanGP (refreshed at every
 # launch) and enable each of them the first time it is installed.
@@ -427,6 +509,7 @@ case "${1:-all}" in
     start)   do_start ;;
     update)  do_update; log "Done. Launch with: bash setup.sh start" ;;
     run)     shift; do_run "$@" ;;
-    -h|--help|help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
-    *) die "Unknown command '$1' (use: install, start, update, run)" ;;
+    drive-setup) shift; do_drive_setup "$@" ;;
+    -h|--help|help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) die "Unknown command '$1' (use: install, start, update, run, drive-setup)" ;;
 esac

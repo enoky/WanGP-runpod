@@ -16,7 +16,7 @@ import gradio as gr
 from shared.utils.plugins import WAN2GPPlugin
 from shared.utils.process_locks import acquire_GPU_ressources, any_GPU_process_running, release_GPU_ressources
 
-from . import batch_runner, headless, pod_control, queue_file
+from . import batch_runner, drive_upload, headless, pod_control, queue_file
 from .queue_file import QueueError
 
 PlugIn_Name = "Queue Runner"
@@ -39,7 +39,7 @@ class QueueRunnerPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = PlugIn_Name
-        self.version = "1.0.0"
+        self.version = "1.1.0"
         self.description = "Processes a WanGP queue file without the browser, and can shut the RunPod pod down when it is finished."
 
     def setup_ui(self):
@@ -91,7 +91,8 @@ class QueueRunnerPlugin(WAN2GPPlugin):
         run, status, done = self._sync_progress()
         if not run or not status:
             stored = queue_file.stored_source(self.work_dir)
-            return ("No queue has been run yet." + (" A queue file from an earlier session is still here: press Start to use it." if stored else "")), False
+            text = "No queue has been run yet." + (" A queue file from an earlier session is still here: press Start to use it." if stored else "")
+            return "\n".join([text, *drive_upload.manual_upload_lines(self.work_dir)]), False
         active = headless.is_active(self.work_dir)
         phase, total_run, total = status.get("phase"), len(run.get("numbers", [])), run.get("total", 0)
         completed, failed, skipped = (len(status.get(key, [])) for key in ("completed", "failed", "skipped"))
@@ -106,6 +107,8 @@ class QueueRunnerPlugin(WAN2GPPlugin):
                 head += f" Now on task {run['numbers'][current - 1]}."
             if completed:
                 head += f" About {headless.duration(elapsed / completed * (total_run - completed))} left."
+        elif phase == "uploading" and active:
+            head = f"FINISHED: {counts}. Uploading the results to Google Drive (progress in the log lines below)..."
         elif phase == "countdown" and active:
             head = f"FINISHED: {counts}. " + headless.shutdown_countdown_text(status)
         elif phase == "stopped":
@@ -117,10 +120,12 @@ class QueueRunnerPlugin(WAN2GPPlugin):
         else:
             head = f"INTERRUPTED (the queue process is gone): {counts}."
         text = [head, f"Whole queue: {len(done)} of {total} task(s) completed. Results are in {run.get('output_dir')}"]
-        if status.get("shutdown_message"):
-            text.append(status["shutdown_message"])
+        for key in ("upload_message", "shutdown_message"):
+            if status.get(key):
+                text.append(status[key])
         if len(done) < total and not active:
             text.append("Press Start again to continue with the tasks that are left.")
+        text += drive_upload.manual_upload_lines(self.work_dir)
         text += ["", "Latest log lines:"] + [f"  {row}" for row in headless.log_tail(self.work_dir)]
         return "\n".join(text), active
 
@@ -148,7 +153,16 @@ class QueueRunnerPlugin(WAN2GPPlugin):
                 raise gr.Error(str(error))
             return queue_file.describe(tasks, done, numbers) + ("" if numbers else "\n\nNothing to do.")
 
-        def start(state, upload, path, skip_done, limit, output_dir, when_done):
+        def resolve_output_dir(output_dir):
+            output_dir = (output_dir or "").strip()
+            return os.path.abspath(os.path.expanduser(output_dir)) if output_dir else self._default_output_dir()
+
+        def upload_now(output_dir, destination):
+            source = resolve_output_dir(output_dir) if (output_dir or "").strip() else (self._read_run().get("output_dir") or self._default_output_dir())
+            gr.Info(drive_upload.start_manual_upload(source, destination or "", self.work_dir))
+            return self._report()[0]
+
+        def start(state, upload, path, skip_done, limit, output_dir, when_done, upload_when_done, destination):
             if headless.is_active(self.work_dir):
                 raise gr.Error("A queue is already running. Stop it first, or wait for it to finish.")
             if headless.other_active_run(self.work_dir):
@@ -160,9 +174,14 @@ class QueueRunnerPlugin(WAN2GPPlugin):
             description = queue_file.describe(tasks, done, numbers)
             if not numbers:
                 return description + "\n\nNothing to do."
+            upload_to = (destination or "").strip() if upload_when_done else ""
+            if upload_when_done:
+                reason = drive_upload.unavailable_reason(upload_to)
+                if reason:
+                    raise gr.Error(f"The results cannot be uploaded: {reason}. Fix this, or untick the upload.")
             if any_GPU_process_running(state, PlugIn_Id):
                 raise gr.Error("WanGP is generating right now. Wait for its queue to finish (or abort it), then press Start again.")
-            output_dir = os.path.abspath(os.path.expanduser((output_dir or "").strip())) if (output_dir or "").strip() else self._default_output_dir()
+            output_dir = resolve_output_dir(output_dir)
 
             # The queue runs in another process: take the GPU away from this one and free its model first.
             acquire_GPU_ressources(state, PlugIn_Id, PlugIn_Name, gr=gr)
@@ -174,7 +193,7 @@ class QueueRunnerPlugin(WAN2GPPlugin):
                 run_queue = queue_file.write_run_file(source, tasks, numbers, self.work_dir)
                 with open(os.path.join(self.work_dir, RUN_FILE), "w", encoding="utf-8") as writer:
                     json.dump({"fingerprint": fingerprint, "total": len(tasks), "numbers": numbers, "output_dir": output_dir}, writer)
-                process = headless.launch(self.work_dir, run_queue, output_dir, when_done, SHUTDOWN_DELAY, sys.argv[1:])
+                process = headless.launch(self.work_dir, run_queue, output_dir, when_done, SHUTDOWN_DELAY, sys.argv[1:], upload_to=upload_to)
             except Exception as error:
                 release_GPU_ressources(state, PlugIn_Id)
                 raise gr.Error(f"The queue could not be started: {error}")
@@ -192,8 +211,9 @@ class QueueRunnerPlugin(WAN2GPPlugin):
             text, active = self._report()
             current_text = str(current_text or "")
             # A report showing a live state still needs its final update once the run has ended.
-            live = current_text.startswith("RUNNING") or "Queue started" in current_text or "press Stop to keep it running" in current_text
-            return text if active or live else gr.update()
+            live = (current_text.startswith("RUNNING") or "Queue started" in current_text or "press Stop to keep it running" in current_text
+                    or "Uploading the results" in current_text or "upload (RUNNING)" in current_text)
+            return text if active or live or drive_upload.manual_upload_running(self.work_dir) else gr.update()
 
         def forget():
             if headless.is_active(self.work_dir):
@@ -221,6 +241,15 @@ class QueueRunnerPlugin(WAN2GPPlugin):
                                     info=(f"Not available: {pod_reason}." if pod_reason else
                                           f"The pod is shut down {SHUTDOWN_DELAY}s after the last task, unless you press Stop. "
                                           "A pod with a network volume cannot be stopped, only terminated."))
+            drive_reason = drive_upload.unavailable_reason()
+            with gr.Row():
+                upload_when_done = gr.Checkbox(label="Upload the results to Google Drive when the queue is finished, before any shutdown",
+                                               value=False, interactive=not drive_reason,
+                                               info=(f"Not available: {drive_reason}." if drive_reason else
+                                                     "The whole output folder is copied; files already in Drive are skipped. "
+                                                     "If the upload fails, the pod is left running."))
+                destination = gr.Textbox(label="Google Drive folder (rclone remote:folder)", value=drive_upload.DEFAULT_DESTINATION)
+                upload_btn = gr.Button("Upload now", size="sm", interactive=not drive_reason)
             with gr.Accordion("Options", open=False):
                 with gr.Row():
                     skip_done = gr.Checkbox(label="Skip the tasks already completed in an earlier run", value=True)
@@ -238,7 +267,9 @@ class QueueRunnerPlugin(WAN2GPPlugin):
         self.on_tab_outputs = [report]
 
         check_btn.click(fn=check, inputs=[upload, path, skip_done, limit], outputs=[report])
-        start_btn.click(fn=start, inputs=[self.state, upload, path, skip_done, limit, output_dir, when_done], outputs=[report])
+        start_btn.click(fn=start, inputs=[self.state, upload, path, skip_done, limit, output_dir, when_done, upload_when_done, destination],
+                        outputs=[report])
+        upload_btn.click(fn=upload_now, inputs=[output_dir, destination], outputs=[report])
         stop_btn.click(fn=stop, queue=False)
         refresh_btn.click(fn=refresh, outputs=[report])
         forget_btn.click(fn=forget, outputs=[report])
