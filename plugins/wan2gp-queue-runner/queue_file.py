@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import threading
 import zipfile
 
 SOURCE_BASENAME = "queue_source"   # the last queue file used, kept so that a run can be resumed
@@ -84,12 +85,20 @@ def read_done(work_dir, fingerprint):
         return set()
 
 
+_progress_lock = threading.Lock()
+
+
 def add_done(work_dir, fingerprint, numbers):
-    done = read_done(work_dir, fingerprint) | set(numbers)
-    path = os.path.join(work_dir, PROGRESS_FILE)
-    with open(path + ".tmp", "w", encoding="utf-8") as writer:
-        json.dump({fingerprint: sorted(done)}, writer)  # only the latest queue is remembered
-    os.replace(path + ".tmp", path)
+    # Several requests of the tab (its timer, Check, Start) can get here at the same moment.
+    with _progress_lock:
+        known = read_done(work_dir, fingerprint)
+        done = known | set(numbers)
+        path = os.path.join(work_dir, PROGRESS_FILE)
+        if done != known or not os.path.isfile(path):
+            temporary = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+            with open(temporary, "w", encoding="utf-8") as writer:
+                json.dump({fingerprint: sorted(done)}, writer)  # only the latest queue is remembered
+            os.replace(temporary, path)
     return done
 
 

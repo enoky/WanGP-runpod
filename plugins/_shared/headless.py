@@ -63,7 +63,10 @@ def alive(pid):
 
 def is_active(work_dir):
     status = batch_runner.read_status(work_dir)
-    return status.get("phase") in ("running", "countdown") and alive(status.get("pid"))
+    if status.get("phase") == "running" and status.get("pid") is None:
+        # Just launched: the runner has not written its process id yet.
+        return time.time() - (status.get("started") or 0) < 20
+    return status.get("phase") in ("running", "uploading", "countdown") and alive(status.get("pid"))
 
 
 def other_active_run(work_dir):
@@ -78,19 +81,20 @@ def other_active_run(work_dir):
     return None
 
 
-def launch(work_dir, queue_file, output_dir, shutdown, delay, wangp_argv, python=sys.executable):
+def launch(work_dir, queue_file, output_dir, shutdown, delay, wangp_argv, python=sys.executable, upload_to=""):
     """Starts the detached runner on queue_file (already written in work_dir). Returns its Popen object."""
     os.makedirs(output_dir, exist_ok=True)
     with open(os.path.join(work_dir, batch_runner.LOG_FILE), "wb"):
         pass  # a new log for each run
     batch_runner.write_status(work_dir, phase="running", pid=None, started=time.time(), finished=None, returncode=None,
-                              shutdown=shutdown, shutdown_message="", deadline=None, current=0, total=0,
+                              shutdown=shutdown, shutdown_message="", upload_message="", deadline=None, current=0, total=0,
                               completed=[], failed=[], skipped=[])
-    command = [python, RUNNER, "--dir", work_dir, "--shutdown", shutdown, "--delay", str(delay), "--",
+    upload = ["--upload-source", output_dir, "--upload-to", upload_to] if upload_to else []
+    command = [python, RUNNER, "--dir", work_dir, *upload, "--shutdown", shutdown, "--delay", str(delay), "--",
                python, "wgp.py", "--process", queue_file, "--output-dir", output_dir, *headless_args(wangp_argv, own_rss_gb())]
     # Its own session: it survives the browser, and the web server if that goes away.
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    batch_runner.write_status(work_dir, pid=process.pid)
+    # From here on only the runner writes the status file: two writers could undo each other's changes.
     with open(ACTIVE_MARKER, "w", encoding="utf-8") as writer:
         writer.write(os.path.abspath(work_dir))
     return process
@@ -101,14 +105,16 @@ def stop(work_dir):
     status = batch_runner.read_status(work_dir)
     if not is_active(work_dir):
         return "Nothing is running."
+    if status.get("phase") == "uploading":
+        return "The results are being uploaded: wait for the upload to finish."
     if status.get("phase") == "countdown":
         with open(os.path.join(work_dir, batch_runner.CANCEL_FILE), "w", encoding="utf-8"):
             pass
         return "The pod will be left running."
     try:
         os.kill(int(status["pid"]), signal.SIGTERM)
-    except (OSError, KeyError, ValueError):
-        return "The run could not be stopped."
+    except (OSError, KeyError, ValueError, TypeError):
+        return "The run is still starting: press Stop again in a few seconds."
     return "Stopping..."
 
 

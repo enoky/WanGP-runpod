@@ -47,6 +47,8 @@ def report(work_dir):
     if phase == "running" and active:
         elapsed = headless.duration(time.time() - (status.get("started") or time.time()))
         head = f"RUNNING for {elapsed} - {done} of {total} image(s) generated so far."
+    elif phase == "uploading" and active:
+        head = f"FINISHED: {done} of {total} image(s) generated. Uploading the results..."
     elif phase == "countdown" and active:
         head = f"FINISHED: {done} of {total} image(s) generated. " + headless.shutdown_countdown_text(status)
     elif phase == "stopped":

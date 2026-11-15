@@ -2,10 +2,12 @@
 
 Started by the plugin as a separate process:
 
-    python batch_runner.py --dir WORK_DIR [--shutdown stop|terminate] [--delay 60] -- COMMAND...
+    python batch_runner.py --dir WORK_DIR [--upload-source DIR --upload-to REMOTE:FOLDER]
+                           [--shutdown stop|terminate] [--delay 60] -- COMMAND...
 
 It runs COMMAND (WanGP's headless queue processing), keeps WORK_DIR/status.json up
-to date for the plugin's tab, and afterwards stops or terminates the pod if asked.
+to date for the plugin's tab, and afterwards uploads the results and stops or
+terminates the pod if asked.
 Standard library only.
 """
 import argparse
@@ -15,9 +17,11 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import drive_upload  # noqa: E402
 import pod_control  # noqa: E402
 
 # What WanGP's headless mode prints around each task of its queue.
@@ -79,9 +83,11 @@ def write_status(work_dir, **changes):
     status = read_status(work_dir)
     status.update(changes)
     path = os.path.join(work_dir, STATUS_FILE)
-    with open(path + ".tmp", "w", encoding="utf-8") as writer:
+    # A name of its own: the web server and the runner must never share a temporary file.
+    temporary = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    with open(temporary, "w", encoding="utf-8") as writer:
         json.dump(status, writer, indent=2)
-    os.replace(path + ".tmp", path)
+    os.replace(temporary, path)
     return status
 
 
@@ -90,6 +96,8 @@ def main():
     parser.add_argument("--dir", required=True)
     parser.add_argument("--shutdown", default=pod_control.KEEP)
     parser.add_argument("--delay", type=int, default=60)
+    parser.add_argument("--upload-source", default="")
+    parser.add_argument("--upload-to", default="")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -117,7 +125,7 @@ def main():
 
     say("Starting: " + " ".join(command))
     write_status(work_dir, phase="running", pid=os.getpid(), started=time.time(), finished=None, returncode=None,
-                 shutdown=args.shutdown, shutdown_message="", deadline=None)
+                 shutdown=args.shutdown, shutdown_message="", upload_message="", deadline=None)
     progress = Progress()
     try:
         child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
@@ -156,8 +164,21 @@ def main():
         return 0
     say(f"WanGP finished with exit code {returncode}.")
 
+    # Upload first: once the pod is gone it is too late.
+    upload_ok, upload_message = True, ""
+    if args.upload_to:
+        write_status(work_dir, phase="uploading", returncode=returncode)
+        say(f"Uploading {args.upload_source} to {args.upload_to}")
+        upload_ok, upload_message = drive_upload.upload(args.upload_source, args.upload_to, log)
+        say(upload_message)
+        write_status(work_dir, upload_message=upload_message)
+
     message = ""
-    if args.shutdown in (pod_control.STOP, pod_control.TERMINATE):
+    if args.shutdown in (pod_control.STOP, pod_control.TERMINATE) and not upload_ok:
+        # Shutting down could destroy the only copy of the results.
+        message = "The pod was left running because the upload did not succeed."
+        say(message)
+    elif args.shutdown in (pod_control.STOP, pod_control.TERMINATE):
         deadline = time.time() + args.delay
         write_status(work_dir, phase="countdown", returncode=returncode, deadline=deadline)
         cancelled = False
