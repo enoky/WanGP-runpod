@@ -134,6 +134,8 @@ class ImageFolderBatchPlugin(WAN2GPPlugin):
                 raise gr.Error(str(error))
             if not jobs:
                 return description + "\n\nNothing to do.", gr.update()
+            if batch_status.headless.other_active_run(self.work_dir):
+                raise gr.Error("Another headless run (Queue Runner) is still going. Stop it first, or wait for it to finish.")
             if any_GPU_process_running(state, PlugIn_Id):
                 raise gr.Error("WanGP is generating right now. Wait for its queue to finish (or abort it), then press Start again.")
 

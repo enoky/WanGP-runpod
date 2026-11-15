@@ -11,6 +11,7 @@ Standard library only.
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -18,6 +19,50 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pod_control  # noqa: E402
+
+# What WanGP's headless mode prints around each task of its queue.
+TASK_START = re.compile(r"\[Task (\d+)/(\d+)\]")
+TASK_DONE = re.compile(r"Task (\d+) completed")
+TASK_SKIPPED = re.compile(r"\[SKIP\] Task (\d+)")
+
+
+class Progress:
+    """Follows WanGP's output to know which tasks of the queue are done."""
+    def __init__(self):
+        self.current, self.total = 0, 0
+        self.completed, self.failed, self.skipped = [], [], []
+        self.changed = False
+        self._pending = ""
+
+    def feed(self, data):
+        self._pending += data.decode("utf-8", errors="replace")
+        pieces = re.split(r"[\r\n]", self._pending)
+        self._pending = pieces.pop()[-2000:]
+        for piece in pieces:
+            self._line(piece)
+
+    def _add(self, numbers, number):
+        if number and number not in numbers:
+            numbers.append(number)
+            self.changed = True
+
+    def _line(self, line):
+        match = TASK_START.search(line)
+        if match:
+            self.current, self.total = int(match.group(1)), int(match.group(2))
+            self.changed = True
+        match = TASK_SKIPPED.search(line)
+        if match:
+            self._add(self.skipped, int(match.group(1)))
+            return
+        match = TASK_DONE.search(line)
+        if match:
+            self._add(self.completed, int(match.group(1)))
+        elif "[ERROR]" in line:
+            self._add(self.failed, self.current)
+
+    def fields(self):
+        return {"current": self.current, "total": self.total, "completed": self.completed, "failed": self.failed, "skipped": self.skipped}
 
 STATUS_FILE, LOG_FILE, CANCEL_FILE = "status.json", "batch.log", "cancel_shutdown"
 
@@ -73,24 +118,37 @@ def main():
     say("Starting: " + " ".join(command))
     write_status(work_dir, phase="running", pid=os.getpid(), started=time.time(), finished=None, returncode=None,
                  shutdown=args.shutdown, shutdown_message="", deadline=None)
+    progress = Progress()
     try:
-        child = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     except OSError as error:
         say(f"Could not start WanGP: {error}")
         write_status(work_dir, phase="done", finished=time.time(), returncode=-1)
         return 1
+    # Copy WanGP's output to the log while following its progress. The loop ends when WanGP closes its output.
+    saved, stop_deadline = time.time(), None
     while True:
         try:
-            returncode = child.wait(timeout=1)
+            data = os.read(child.stdout.fileno(), 65536)
+        except InterruptedError:
+            continue
+        if not data:
             break
-        except subprocess.TimeoutExpired:
-            if stop["requested"] and child.poll() is None:
-                # Give WanGP a moment to end by itself, then insist.
-                try:
-                    returncode = child.wait(timeout=20)
-                    break
-                except subprocess.TimeoutExpired:
-                    child.kill()
+        log.write(data)
+        progress.feed(data)
+        if progress.changed and time.time() - saved > 1:
+            write_status(work_dir, **progress.fields())
+            progress.changed, saved = False, time.time()
+        if stop["requested"]:
+            stop_deadline = stop_deadline or time.time() + 20
+            if time.time() > stop_deadline and child.poll() is None:
+                child.kill()  # it did not end by itself
+    try:
+        returncode = child.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        returncode = child.wait()
+    write_status(work_dir, **progress.fields())
 
     if stop["requested"]:
         say("Stopped on request.")
