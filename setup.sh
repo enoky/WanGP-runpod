@@ -7,6 +7,8 @@
 #   bash setup.sh update     pull the latest WanGP and refresh its dependencies
 #   bash setup.sh run ARGS   run "python wgp.py ARGS" in the WanGP environment (no web UI flags added)
 #   bash setup.sh drive-setup  connect Google Drive (once), so that the plugins can upload results there
+#   bash setup.sh get-lora LINK [--name FILE] [--folder ltx2]
+#                          download a LoRA from Civitai (or any direct link) into WanGP's loras folder
 #
 # Everything that must survive a pod restart lives under /workspace (the network
 # volume): the WanGP checkout, models, LoRAs, outputs and an archive of the
@@ -30,6 +32,7 @@ WANGP_EXTRA_KERNELS="${WANGP_EXTRA_KERNELS:-1}"  # 1 = also install Nunchaku / G
 # WANGP_AUTH_PASSWORD   the UI password; if unset WanGP generates one and prints it at startup
 # WANGP_PUBLIC_URL      the URL the UI is opened at; defaults to the RunPod proxy URL of this pod.
 #                       Set it to "none" when connecting some other way (e.g. a direct TCP port).
+# CIVITAI_TOKEN         a Civitai API key, for "get-lora" (most Civitai downloads need one)
 
 # The Python environment is ~100k small files, which network volumes handle
 # very slowly. It lives on the fast container disk and is saved to / restored
@@ -503,6 +506,185 @@ do_run() {
     exec python wgp.py "$@"
 }
 
+# ------------------------------- LoRAs --------------------------------------
+# Download a LoRA straight onto the pod, into WanGP's loras folder, so that it
+# never has to go through a slow home connection.
+#
+#   bash setup.sh get-lora https://civitai.com/models/2557755/some-name?modelVersionId=2874411
+#   bash setup.sh get-lora 2874411                        (a Civitai model version number)
+#   bash setup.sh get-lora https://civitai.com/models/2557755      (its latest version)
+#   bash setup.sh get-lora https://civitai.com/api/download/models/2874411
+#   bash setup.sh get-lora https://huggingface.co/.../file.safetensors   (any direct link)
+#
+# Options: --name FILE saves it under that file name (default: Civitai's name, or the
+# link's); --folder DIR is the subfolder of loras/ (default ltx2, shared by every LTX-2
+# model) or an absolute path; --force replaces a file that is already there.
+CIVITAI_BASE="${CIVITAI_BASE:-https://civitai.com}"
+
+do_get_lora() {
+    local source="" name="" folder="ltx2" force=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --name)   [ $# -ge 2 ] || die "--name needs a file name"; name="$2"; shift 2 ;;
+            --folder) [ $# -ge 2 ] || die "--folder needs a folder"; folder="$2"; shift 2 ;;
+            --force)  force=1; shift ;;
+            -h|--help)
+                sed -n '/^# ------------------------------- LoRAs/,/^CIVITAI_BASE=/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+                return 0 ;;
+            -*) die "Unknown option '$1' (use --name, --folder or --force)" ;;
+            *)  [ -z "$source" ] || die "Give one link at a time."; source="$1"; shift ;;
+        esac
+    done
+    [ -n "$source" ] || die "Usage: bash setup.sh get-lora LINK [--name FILE] [--folder ltx2] [--force]"
+    install_system_packages
+    command -v python3 >/dev/null 2>&1 || die "python3 is needed to read Civitai's answer"
+
+    local dest_dir
+    case "$folder" in
+        /*) dest_dir="$folder" ;;
+        *)  dest_dir="$WANGP_DIR/loras/$folder" ;;
+    esac
+    mkdir -p "$dest_dir"
+
+    # Work out the real download link and file name (Civitai links need its API).
+    local resolved url file_name size_kb
+    resolved="$(CIVITAI_BASE="$CIVITAI_BASE" python3 - "$source" <<'PY'
+import json, os, re, sys, urllib.error, urllib.parse, urllib.request
+
+source = sys.argv[1].strip()
+base = os.environ["CIVITAI_BASE"].rstrip("/")
+token = (os.environ.get("CIVITAI_TOKEN") or os.environ.get("CIVITAI_API_KEY") or "").strip()
+
+def fail(message):
+    print(message, file=sys.stderr)
+    sys.exit(2)
+
+def api(path):
+    request = urllib.request.Request(base + path, headers={"User-Agent": "wangp-runpod"})
+    if token:
+        request.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(request, timeout=60) as reply:
+            return json.load(reply)
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403):
+            fail("Civitai refused the request (HTTP %d). Set CIVITAI_TOKEN to an API key "
+                 "(civitai.com: Account settings -> API Keys)." % error.code)
+        if error.code == 404:
+            fail("Civitai has no such model or version: %s" % source)
+        fail("Civitai answered HTTP %d for %s" % (error.code, path))
+    except (urllib.error.URLError, OSError) as error:
+        fail("Could not reach Civitai: %s" % error)
+
+version = model = None
+parsed = urllib.parse.urlparse(source)
+if re.fullmatch(r"\d+", source):
+    version = source
+elif "civitai" in parsed.netloc:
+    query = urllib.parse.parse_qs(parsed.query)
+    if query.get("modelVersionId"):
+        version = query["modelVersionId"][0]
+    else:
+        m = re.search(r"/api/download/models/(\d+)", parsed.path) or re.search(r"/model-versions/(\d+)", parsed.path)
+        if m:
+            version = m.group(1)
+        else:
+            m = re.search(r"/models/(\d+)", parsed.path)
+            if not m:
+                fail("That Civitai link names no model or version: %s" % source)
+            model = m.group(1)
+elif parsed.scheme in ("http", "https"):
+    name = os.path.basename(urllib.parse.unquote(parsed.path)) or "lora.safetensors"
+    print("%s\t%s\t0" % (source, name))
+    sys.exit(0)
+else:
+    fail("Give a Civitai link, a Civitai version number, or a direct http(s) link.")
+
+if model:
+    data = api("/api/v1/models/%s" % model)
+    versions = data.get("modelVersions") or []
+    if not versions:
+        fail("Civitai lists no versions for model %s" % model)
+    version = str(versions[0]["id"])
+    print("Latest version of '%s': %s (%s)" % (data.get("name", model), versions[0].get("name", ""), version),
+          file=sys.stderr)
+
+data = api("/api/v1/model-versions/%s" % version)
+files = data.get("files") or []
+pick = (next((f for f in files if f.get("primary")), None)
+        or next((f for f in files if str(f.get("name", "")).endswith(".safetensors")), None)
+        or (files[0] if files else None))
+if not pick:
+    fail("Civitai lists no file for version %s" % version)
+base_model = data.get("baseModel") or ""
+if base_model:
+    print("Civitai says it was trained for: %s" % base_model, file=sys.stderr)
+words = data.get("trainedWords") or []
+if words:
+    print("Trigger words: %s" % ", ".join(words), file=sys.stderr)
+url = pick.get("downloadUrl") or "%s/api/download/models/%s" % (base, version)
+print("%s\t%s\t%d" % (url, pick.get("name") or ("lora-%s.safetensors" % version), int(pick.get("sizeKB") or 0)))
+PY
+)" || die "Could not work out what to download (see the message above)."
+    IFS=$'\t' read -r url file_name size_kb <<< "$resolved"
+    [ -n "$name" ] && file_name="$name"
+    file_name="$(basename "$file_name")"
+    [ -n "$file_name" ] || die "No file name to save as; give one with --name"
+
+    local target="$dest_dir/$file_name"
+    if [ -f "$target" ] && [ "$force" != 1 ]; then
+        log "Already there: $target ($(du -h "$target" | cut -f1)). Use --force to download it again."
+        return 0
+    fi
+
+    local auth=() tmp="$target.part" code
+    case "$url" in
+        *civitai.com*|"$CIVITAI_BASE"*) [ -n "${CIVITAI_TOKEN:-${CIVITAI_API_KEY:-}}" ] && \
+            auth=(-H "Authorization: Bearer ${CIVITAI_TOKEN:-${CIVITAI_API_KEY:-}}") ;;
+    esac
+    local size_note=""
+    if [ "${size_kb:-0}" -ge 1024 ] 2>/dev/null; then size_note=" ($(( size_kb / 1024 )) MB)"
+    elif [ "${size_kb:-0}" -gt 0 ] 2>/dev/null; then size_note=" (${size_kb} KB)"; fi
+    log "Downloading $file_name$size_note into $dest_dir"
+    code="$(curl -L --progress-bar -A wangp-runpod ${auth[@]+"${auth[@]}"} -o "$tmp" -w '%{http_code}' "$url")" || code="${code:-000}"
+    if [ "$code" != 200 ]; then
+        rm -f "$tmp"
+        case "$code" in
+            401|403) die "The download was refused (HTTP $code). Set CIVITAI_TOKEN to a Civitai API key: CIVITAI_TOKEN=your-key bash setup.sh get-lora ..." ;;
+            *)       die "The download failed (HTTP $code)." ;;
+        esac
+    fi
+
+    # A refused or expired link can still answer 200 with a web page; make sure this
+    # is a model file before it goes where WanGP will try to load it.
+    if ! python3 - "$tmp" "$file_name" <<'PY'
+import json, os, struct, sys
+path, name = sys.argv[1:3]
+size = os.path.getsize(path)
+with open(path, "rb") as reader:
+    head = reader.read(8)
+    if name.endswith(".safetensors"):
+        if len(head) < 8:
+            sys.exit("The file is empty.")
+        length = struct.unpack("<Q", head)[0]
+        if not 2 <= length < size or length > 100_000_000:
+            sys.exit("This is not a safetensors file (%d bytes); the link may have returned a web page." % size)
+        try:
+            json.loads(reader.read(length))
+        except ValueError:
+            sys.exit("This is not a safetensors file; its header is unreadable.")
+    elif head[:1] in (b"<", b"{") or size < 100_000:
+        sys.exit("This looks like a web page or an error, not a model file (%d bytes)." % size)
+PY
+    then
+        rm -f "$tmp"
+        die "Nothing was saved. Check the link, and set CIVITAI_TOKEN if the model needs a login."
+    fi
+    mv -f "$tmp" "$target"
+    log "Saved $target ($(du -h "$target" | cut -f1))"
+    log "In WanGP, or in the prompt app's LoRA box, use the file name: $file_name"
+}
+
 case "${1:-all}" in
     all)     do_install; do_start ;;
     install) do_install; log "Done. Launch with: bash setup.sh start" ;;
@@ -510,6 +692,7 @@ case "${1:-all}" in
     update)  do_update; log "Done. Launch with: bash setup.sh start" ;;
     run)     shift; do_run "$@" ;;
     drive-setup) shift; do_drive_setup "$@" ;;
-    -h|--help|help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' ;;
-    *) die "Unknown command '$1' (use: install, start, update, run, drive-setup)" ;;
+    get-lora) shift; do_get_lora "$@" ;;
+    -h|--help|help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) die "Unknown command '$1' (use: install, start, update, run, drive-setup, get-lora)" ;;
 esac
