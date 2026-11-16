@@ -82,6 +82,35 @@ bash setup.sh update     # pull the latest WanGP and refresh dependencies
 bash setup.sh run ARGS   # run wgp.py with your own arguments, e.g. --process queue.zip
 ```
 
+## Downloading LoRAs
+
+`get-lora` downloads a LoRA straight onto the pod, into WanGP's `loras` folder, so it never
+goes through your own connection:
+
+```bash
+CIVITAI_TOKEN=your-civitai-api-key \
+bash /workspace/WanGP-runpod/setup.sh get-lora "https://civitai.com/models/2557755/retro-90s-anime-style-lora-ltx-23"
+```
+
+- **The link** can be a Civitai model page (its latest version), a page with
+  `?modelVersionId=...` (that version), a Civitai download link, a bare version number, or
+  any direct link to a file (Hugging Face, for example).
+- **The key**: most Civitai downloads need an API key. Create one on civitai.com under
+  Account settings -> API Keys. Give it on the command line as above, or set `CIVITAI_TOKEN`
+  as an environment variable in the pod's settings so you never have to type it.
+- **Where it goes**: `/workspace/WanGP/loras/ltx2/` by default, the folder every LTX-2 model
+  reads. `--folder wan` (or any other subfolder of `loras`, or an absolute path) puts it
+  elsewhere.
+- **The file name** is Civitai's own, unless you give one with `--name FILE`. The command
+  prints the name to use in WanGP or in a queue, along with what Civitai says the LoRA was
+  trained for and its trigger words.
+- **Checks**: a file that is already there is not downloaded again (`--force` replaces it). The
+  download goes to a temporary file and is only kept if it really is a model file, so a
+  refused link that returns a web page never ends up where WanGP would try to load it.
+
+It lives on `/workspace`, so it survives pod restarts; WanGP sees a new LoRA after a refresh of
+its LoRA list or a restart.
+
 ## Image Folder Batch plugin
 
 This repository ships a WanGP plugin that runs one generation per image of a folder, all with
